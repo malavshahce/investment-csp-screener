@@ -1,0 +1,6 @@
+.venv/
+__pycache__/
+*.pyc
+trade_journal.csv
+.streamlit/secrets.toml
+.DS_Store
