@@ -13,6 +13,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 import yfinance as yf
+from scipy.optimize import brentq
 from scipy.stats import norm
 
 warnings.filterwarnings("ignore")
@@ -245,12 +246,23 @@ def get_next_earnings_date(tk):
 
 
 def get_ex_div_date(tk):
+    """Next ex-dividend date: from the calendar, else from the company info (epoch seconds). None if past/unknown."""
     try:
         cal = tk.calendar
         d = _to_date(cal.get("Ex-Dividend Date")) if cal else None
-        return d if d and d >= date.today() else None
+        if d and d >= date.today():
+            return d
     except Exception:
-        return None
+        pass
+    try:
+        ts = tk.info.get("exDividendDate")
+        if ts:
+            d = datetime.fromtimestamp(ts).date()
+            if d >= date.today():
+                return d
+    except Exception:
+        pass
+    return None
 
 
 # ---------------- Option math ----------------
@@ -274,6 +286,19 @@ def bs_put_price(S, K, T, r, q, sigma):
         return np.nan
     d1, d2 = _d1_d2(S, K, T, r, q, sigma)
     return K * np.exp(-r * T) * norm.cdf(-d2) - S * np.exp(-q * T) * norm.cdf(-d1)
+
+
+def implied_vol_put(price, S, K, T, r, q):
+    """Back out the implied volatility that makes the Black-Scholes put price equal `price`. NaN if impossible."""
+    if price <= 0 or T <= 0:
+        return np.nan
+    intrinsic = max(K * np.exp(-r * T) - S * np.exp(-q * T), 0.0)
+    if price <= intrinsic + 1e-6:
+        return np.nan
+    try:
+        return brentq(lambda sig: bs_put_price(S, K, T, r, q, sig) - price, 0.01, 5.0, xtol=1e-6)
+    except Exception:
+        return np.nan
 
 
 def put_pnl_at_drop(spot, K, premium, drop_pct):
@@ -303,6 +328,7 @@ class ScanParams:
     skip_downtrend: bool = False
     below_sma: bool = False
     require_edge: bool = False
+    allow_stale: bool = False   # use last-trade prices when there is no live bid/ask (market closed)
     rank_by: str = "Score"
 
 
@@ -424,7 +450,13 @@ def scan_ticker_for_csp(ticker_symbol, p):
             vol = getattr(row, "volume", 0)
             vol = 0 if pd.isna(vol) else vol
 
-            # Only a live bid is a price you can actually sell at.
+            last = getattr(row, "lastPrice", 0) or 0
+            stale = False
+            if (bid <= 0 or ask <= 0) and p.allow_stale and last > 0:
+                bid = ask = float(last)   # planning only: no live quote, so use the last trade
+                stale = True
+
+            # Normally only a live bid is a price you can actually sell at.
             if bid <= 0 or ask <= 0 or K > max_strike:
                 continue
             premium = bid
@@ -450,11 +482,15 @@ def scan_ticker_for_csp(ticker_symbol, p):
                 continue
             counts["spread"] += 1
 
+            dividend_yield = lazy_get("dividend", get_dividend_yield)
+            if stale:
+                # Yahoo's after-hours implied volatilities are placeholders (e.g. exactly 12.5% / 25%), so
+                # derive IV from the last-trade price instead.
+                iv = implied_vol_put(premium, spot, K, T, p.risk_free_rate, dividend_yield)
             if iv is None or np.isnan(iv) or iv < MIN_SANE_IV or iv > MAX_SANE_IV:
                 continue
             counts["sane_iv"] += 1
 
-            dividend_yield = lazy_get("dividend", get_dividend_yield)
             delta, win_prob = bs_put_metrics(spot, K, T, p.risk_free_rate, dividend_yield, iv)
             if np.isnan(win_prob):
                 continue
@@ -518,6 +554,7 @@ def scan_ticker_for_csp(ticker_symbol, p):
                 "Next Earnings": next_earnings.strftime("%Y-%m-%d") if next_earnings else "—",
                 "Earnings Alert": "⚠️ In Window" if earnings_in_window else "",
                 "Ex-Div Alert": "Ex-div in window" if exdiv_in_window else "",
+                "Quote": "Last trade (market closed)" if stale else "",
                 "Trend": trend,
                 "RSI": round(rsi14, 0) if not np.isnan(rsi14) else np.nan,
                 "Open Interest": int(oi),
@@ -672,7 +709,7 @@ def build_plan(summary, capital, reserve_pct, max_pos_pct, max_positions, max_le
             "Breakeven": r["Breakeven"], "Earnings Alert": r["Earnings Alert"], "Trend": r["Trend"],
             "Lev": int(r["Lev"]), "% of cash": round(n * cost / capital * 100, 1),
             "Size flag": "Above your preferred per-position max" if n * cost > pos_cap else "",
-            "Relaxed": r.get("Relaxed", ""),
+            "Relaxed": r.get("Relaxed", ""), "Quote": r.get("Quote", ""),
         })
 
     # Pass 1: candidates that fit an equal share of your cash, best-ranked first.

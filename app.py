@@ -298,6 +298,13 @@ with tab_scan:
                                          help="Most liquid first. Roughly 0.6 seconds per ticker: 400 ≈ 4 min, "
                                               "1,500 ≈ 15 min.")
 
+            h2 = st.columns(4)
+            allow_stale = h2[0].checkbox(
+                "Use last-trade prices when the market is closed", value=not _open,
+                help="After hours Yahoo shows no live bids, so scans find nothing. Turn this on to plan for the next "
+                     "session using each option's last traded price. Those rows are labeled and may be hours or "
+                     "days old: always re-check live prices before trading.")
+
         run_button = st.form_submit_button("Run scan", type="primary", width="stretch")
 
     tickers = [t.strip().upper() for t in tickers_input.replace("\n", ",").split(",") if t.strip()]
@@ -325,7 +332,7 @@ with tab_scan:
                 max_spread_pct=max_spread_pct, top_n=top_n, min_otm_pct=min_otm_pct,
                 min_hist_win=min_hist_win, min_premium_usd=min_premium_usd,
                 max_contract_cost=max_contract_cost, exclude_earnings=exclude_earnings,
-                skip_downtrend=skip_downtrend, below_sma=below_sma, require_edge=require_edge,
+                skip_downtrend=skip_downtrend, below_sma=below_sma, require_edge=require_edge, allow_stale=allow_stale,
                 rank_by=rank_label,
             )
             results, notes_map, near_miss, relaxed_used = {}, {}, [], False
@@ -428,6 +435,10 @@ with tab_scan:
                     f"{mi['passed']:,} pass your price/volume/cash filters → scanned the {mi['scanning']:,} most "
                     f"liquid ones (raise 'Max tickers to scan' to cover more).")
 
+        if any((d.get("Quote", "") != "").any() for d in scan_state["results"].values()):
+            st.warning("Some prices are **last-trade prices from when the market was closed** (marked in the Price "
+                       "source column). Use these to plan, then re-check live bids and asks when the market opens.")
+
         if scan_state.get("relaxed_used"):
             st.warning("Few trades passed your strict filters, so I also ran looser ones (" + E.RELAXED_NOTE +
                        "). Those rows are marked **Relaxed filters**. Liquidity is thinner there: use limit orders "
@@ -458,7 +469,7 @@ with tab_scan:
                                     acct["max_positions"], acct["max_lev_pct"], rank_col,
                                     CONTRACT_CHOICES[contracts_label])
 
-        display_cols = ["Relaxed", "Expiration", "DTE", "Strike", "% OTM", "Distance (σ)", "Premium (Bid)", "Mid",
+        display_cols = ["Relaxed", "Quote", "Expiration", "DTE", "Strike", "% OTM", "Distance (σ)", "Premium (Bid)", "Mid",
                         "Premium $", "Delta", "Est. Win Prob %", "Hist. Win %", "Win % (cons.)", "Edge $",
                         "Annualized Yield %", "Return/Day %", "Score", "Lev", "IV/HV", "Trend", "RSI",
                         "P&L @ -10% $", "P&L @ -20% $", "Exit Target ($)", "Next Earnings",
@@ -494,6 +505,7 @@ with tab_scan:
             "RSI": st.column_config.NumberColumn("RSI", format="%d"),
             "Contracts": st.column_config.NumberColumn("Contracts", format="%d"),
             "Relaxed": st.column_config.TextColumn("Filters"),
+            "Quote": st.column_config.TextColumn("Price source"),
             "% of cash": st.column_config.NumberColumn("% of cash", format="%.0f%%"),
             "Sell limit (mid)": st.column_config.NumberColumn("Sell limit (mid)", format="$%.2f"),
             "Cash secured $": st.column_config.NumberColumn("Cash secured", format="$%d"),
@@ -534,7 +546,7 @@ with tab_scan:
                 show_table(plan, ["Ticker", "Expiration", "DTE", "Strike", "Contracts", "Sell limit (mid)",
                                   "Premium $", "Cash secured $", "Win % (cons.)", "Edge $",
                                   "P&L @ -10% $", "P&L @ -20% $", "% of cash", "Breakeven", "Trend", "Earnings Alert",
-                                  "Relaxed"])
+                                  "Relaxed", "Quote"])
 
                 neg_edge = plan[plan["Edge $"] < 0]
                 if not neg_edge.empty:
@@ -567,7 +579,7 @@ with tab_scan:
                     with st.expander(f"Next-best candidates that didn't fit the plan ({len(others)} tickers)"):
                         show_table(others.head(25), ["Ticker", "Expiration", "DTE", "Strike", "Premium $",
                                                      "Win % (cons.)", "Edge $", "Capital Req. $", "Trend",
-                                                     "Earnings Alert", "Relaxed"])
+                                                     "Earnings Alert", "Relaxed", "Quote"])
 
                 md("- **Sell limit (mid)** is the price to enter as a limit order; the premium shown assumes the "
                    "lower **bid**, so it is conservative.\n"
@@ -844,6 +856,7 @@ with tab_guide:
     with st.expander("Limits — read this"):
         md("""
 - **Yahoo data is delayed and imperfect** (about 15 minutes; open interest and implied volatility can be stale or missing). Always confirm live prices at your broker before trading. For daily trades, a broker data feed is worth it.
+- **After-hours scans use last-trade prices.** When the market is closed Yahoo has no live bids, so the scanner (if you leave 'Use last-trade prices when the market is closed' on) works from each option's last trade and recomputes implied volatility itself, because Yahoo's after-hours volatility numbers are placeholders. Rows are labeled in the *Price source* column. Treat them as a plan for the next session, and re-check live bids at the open.
 - **Probabilities are estimates.** Models assume smooth price moves; real markets gap. Gaps and crashes are where put sellers lose the most.
 - **Past results don't predict future results.** Historical win % only reflects the last ~3 years.
 - **This tool screens; it doesn't guarantee profit.** Selling puts earns small steady income and can take large losses in a sell-off. Size so that a bad week is survivable.

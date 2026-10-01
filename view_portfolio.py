@@ -8,7 +8,7 @@ import streamlit as st
 import calc
 import markets as MK
 import portfolio as PF
-from common import big_number, line_chart, live_panel, md, money, rerun_fragment, signed_bar, updated_caption
+from common import big_number, category_bar, line_chart, live_panel, md, money, rerun_fragment, signed_bar, updated_caption
 
 TEMPLATE = "ticker,shares,avg_cost,account,notes\nAAPL,10,150.00,Brokerage,example row\nKO,25,58.40,Roth IRA,\n"
 
@@ -100,24 +100,28 @@ def _holdings_table(df):
 
 
 def _charts(df, holdings):
+    total = df["Value"].sum()
+    by_t = (df.groupby("Ticker")["Value"].sum() / total * 100).sort_values(ascending=False)
+    sec = (df.groupby("Sector")["Value"].sum() / total * 100).sort_values(ascending=False)
     a, b = st.columns(2)
     with a:
-        st.markdown("**By holding**")
-        st.bar_chart(df.sort_values("Value", ascending=False).set_index("Ticker")["Weight %"], height=260)
+        st.markdown("**By holding (% of portfolio)**")
+        category_bar(by_t.rename("Weight").rename_axis("Holding").reset_index(), "Holding", "Weight",
+                     order=list(by_t.index), fmt=".1f")
     with b:
-        st.markdown("**By sector**")
-        sec = (df.groupby("Sector")["Value"].sum() / df["Value"].sum() * 100).sort_values(ascending=False)
-        st.bar_chart(sec, height=260)
+        st.markdown("**By sector (% of portfolio)**")
+        category_bar(sec.rename("Weight").rename_axis("Sector").reset_index(), "Sector", "Weight",
+                     order=list(sec.index), fmt=".1f")
 
     st.markdown("**Value over the past year vs the S&P 500**")
     st.caption("Uses today's share counts for the whole year (it shows how this mix performed, "
                "not your actual account history).")
-    syms = tuple(df["Ticker"]) + ("SPY",)
+    syms = tuple(dict.fromkeys(list(df["Ticker"]) + ["SPY"]))
     mat, ts = MK.get_price_matrix(syms, "1y")
     if mat.empty or "SPY" not in mat:
         st.info("Not enough price history to draw the chart.")
         return
-    shares = df.set_index("Ticker")["Shares"]
+    shares = df.groupby("Ticker")["Shares"].sum()
     held = [t for t in shares.index if t in mat.columns]
     value = (mat[held] * shares[held]).sum(axis=1)
     out = pd.DataFrame({"Your portfolio": value / value.iloc[0] * 100, "S&P 500 (SPY)": mat["SPY"] / mat["SPY"].iloc[0] * 100})
@@ -129,6 +133,7 @@ def _charts(df, holdings):
 
 def _income(df, sm):
     payers = df[df["Annual Div $"] > 0].copy()
+    payers = payers.assign(**{"Cost": payers["Cost"].fillna(payers["Value"])})   # unknown cost: treat value as cost
     if payers.empty:
         st.info("None of your holdings pay a dividend, so there is no income to project.")
         return
@@ -138,7 +143,9 @@ def _income(df, sm):
     c[2].metric("Portfolio yield", f"{sm['yield_pct']:.2f}%")
     c[3].metric("Yield on cost", f"{sm['yoc_pct']:.2f}%" if sm["yoc_pct"] == sm["yoc_pct"] else "—")
     st.markdown("**Dividend income by holding (per year)**")
-    st.bar_chart(payers.set_index("Ticker")["Annual Div $"].sort_values(ascending=False), height=240)
+    by_pay = payers.groupby("Ticker")["Annual Div $"].sum().sort_values(ascending=False)
+    category_bar(by_pay.rename("Dividends").rename_axis("Holding").reset_index(), "Holding", "Dividends",
+                 order=list(by_pay.index), fmt="$,.0f")
 
     st.markdown("**Project this portfolio's dividends (with and without reinvesting)**")
     c = st.columns(5)
@@ -202,6 +209,12 @@ def _make_panel(on_cloud, has_password):
             st.warning("No quote for: " + ", ".join(bad) + ". Check the ticker symbols (class shares use a dash, e.g. BRK-B).")
         df = df.dropna(subset=["Value"])
         sm = PF.summarize(df)
+        ignored = int((holdings["shares"].fillna(0) <= 0).sum())
+        if ignored:
+            st.caption(f"{ignored} row(s) with zero or negative shares are ignored (short positions aren't supported).")
+        if sm.get("missing_cost"):
+            st.caption(f"{sm['missing_cost']} holding(s) have no average cost, so they are left out of gain/loss "
+                       "and yield-on-cost. Add the cost in Manage holdings.")
 
         with st.container(key="pf_values"):
             _summary_row(sm)

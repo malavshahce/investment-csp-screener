@@ -25,9 +25,15 @@ def _add_form(wl):
         n = c[3].text_input("Note", placeholder="optional")
         c[4].write("")
         if c[4].form_submit_button("Add", type="primary", width="stretch") and t.strip():
-            new = pd.DataFrame([{"ticker": t.strip().upper(), "alert_above": a or np.nan,
-                                 "alert_below": b or np.nan, "note": n}])
-            PF.save_watchlist(pd.concat([wl, new], ignore_index=True))
+            sym = PF._norm_ticker(t)
+            found, _ = MK.get_quotes((sym,))
+            if found.empty:
+                st.session_state["wl_msg"] = f"Could not find a price for '{sym}'. Check the symbol (e.g. BRK-B)."
+            else:
+                new = pd.DataFrame([{"ticker": sym, "alert_above": a or np.nan,
+                                     "alert_below": b or np.nan, "note": n}])
+                PF.save_watchlist(pd.concat([wl, new], ignore_index=True))
+                st.session_state.pop("wl_msg", None)
             rerun_fragment()
 
 
@@ -35,6 +41,8 @@ def _panel():
     st.subheader("Watchlist")
     wl = PF.load_watchlist()
     _add_form(wl)
+    if st.session_state.get("wl_msg"):
+        st.warning(st.session_state["wl_msg"])
     if wl.empty:
         st.info("Your watchlist is empty. Add a ticker above. Set an alert price to be flagged when it crosses.")
         return

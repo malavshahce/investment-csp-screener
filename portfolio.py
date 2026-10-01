@@ -26,6 +26,11 @@ _ALIASES = {
 }
 
 
+def _norm_ticker(t):
+    """Upper-case, trimmed, class-share dots turned into dashes (BRK.B -> BRK-B), the form Yahoo expects."""
+    return str(t).strip().upper().replace(".", "-").replace("/", "-")
+
+
 def _load(path, columns):
     if not path.exists():
         return pd.DataFrame(columns=columns)
@@ -40,6 +45,7 @@ def load_holdings():
     df = _load(PORTFOLIO_PATH, HOLDING_COLUMNS)
     df["account"] = df["account"].fillna("").astype(str)
     df["notes"] = df["notes"].fillna("").astype(str)
+    df["ticker"] = df["ticker"].map(lambda t: _norm_ticker(t) if pd.notna(t) else t)
     return df
 
 
@@ -71,7 +77,9 @@ def normalize_import(df):
 
 
 def load_watchlist():
-    return _load(WATCHLIST_PATH, WATCH_COLUMNS).assign(note=lambda d: d["note"].fillna("").astype(str))
+    df = _load(WATCHLIST_PATH, WATCH_COLUMNS).assign(note=lambda d: d["note"].fillna("").astype(str))
+    df["ticker"] = df["ticker"].map(lambda t: _norm_ticker(t) if pd.notna(t) else t)
+    return df
 
 
 def save_watchlist(df):
@@ -107,17 +115,18 @@ def value_holdings(holdings):
         prof = profiles.get(s, {})
         rate = MK.forward_dividend(s, prof)
         value = r["shares"] * price
-        cost = r["shares"] * r["avg_cost"]
+        has_cost = pd.notna(r["avg_cost"]) and r["avg_cost"] > 0
+        cost = r["shares"] * r["avg_cost"] if has_cost else np.nan
         sector = prof.get("sector") or ("ETF / Fund" if prof.get("quoteType") in ("ETF", "MUTUALFUND") else "Other")
         rows.append({
             "Ticker": s, "Name": prof.get("shortName") or prof.get("longName") or s, "Account": r["account"],
             "Shares": r["shares"], "Avg Cost": r["avg_cost"], "Price": price,
-            "Value": value, "Cost": cost, "Gain $": value - cost,
-            "Gain %": (value / cost - 1) * 100 if cost else np.nan,
+            "Value": value, "Cost": cost, "Gain $": value - cost if has_cost else np.nan,
+            "Gain %": (value / cost - 1) * 100 if has_cost else np.nan,
             "Day $": r["shares"] * float(q.loc[s, "Change"]), "Day %": float(q.loc[s, "Day %"]),
             "Div/Share": rate, "Annual Div $": r["shares"] * rate,
             "Yield %": rate / price * 100 if price else 0.0,
-            "Yield on Cost %": rate / r["avg_cost"] * 100 if r["avg_cost"] else np.nan,
+            "Yield on Cost %": rate / r["avg_cost"] * 100 if has_cost else np.nan,
             "Beta": prof.get("beta", np.nan), "Sector": sector, "Rating": prof.get("recommendationKey", ""),
         })
     df = pd.DataFrame(rows)
@@ -127,42 +136,50 @@ def value_holdings(holdings):
 
 
 def summarize(df):
-    """Portfolio-level totals from a valued-holdings frame."""
+    """Portfolio-level totals from a valued-holdings frame. Gain/loss only counts holdings with a known cost."""
     d = df.dropna(subset=["Value"])
     if d.empty:
         return {}
-    total, cost = d["Value"].sum(), d["Cost"].sum()
+    total = d["Value"].sum()
+    known = d.dropna(subset=["Cost"])
+    cost, known_value = known["Cost"].sum(), known["Value"].sum()
     beta_rows = d.dropna(subset=["Beta"])
+    prev_total = total - d["Day $"].sum()
     return {
-        "value": total, "cost": cost, "gain": total - cost, "gain_pct": (total / cost - 1) * 100 if cost else np.nan,
-        "day": d["Day $"].sum(), "day_pct": d["Day $"].sum() / (total - d["Day $"].sum()) * 100 if total else 0.0,
+        "value": total, "cost": cost, "gain": known_value - cost,
+        "gain_pct": (known_value / cost - 1) * 100 if cost else np.nan,
+        "missing_cost": int(d["Cost"].isna().sum()),
+        "day": d["Day $"].sum(), "day_pct": d["Day $"].sum() / prev_total * 100 if prev_total else 0.0,
         "annual_div": d["Annual Div $"].sum(), "yield_pct": d["Annual Div $"].sum() / total * 100 if total else 0.0,
         "yoc_pct": d["Annual Div $"].sum() / cost * 100 if cost else np.nan,
         "beta": float((beta_rows["Beta"] * beta_rows["Value"]).sum() / beta_rows["Value"].sum()) if len(beta_rows) else np.nan,
-        "positions": len(d),
-        "payers": int((d["Annual Div $"] > 0).sum()),
+        "positions": d["Ticker"].nunique(),
+        "payers": int(d[d["Annual Div $"] > 0]["Ticker"].nunique()),
     }
 
 
 def insights(df):
-    """Plain-language concentration / risk notes."""
+    """Plain-language concentration / risk notes. Holdings of the same ticker in several accounts are combined."""
     d = df.dropna(subset=["Value"])
     notes = []
     if d.empty:
         return notes
-    top = d.sort_values("Value", ascending=False).iloc[0]
-    if top["Weight %"] > 25:
-        notes.append(f"{top['Ticker']} is {top['Weight %']:.0f}% of your portfolio. One stock above ~25% makes results "
-                     "depend heavily on it.")
-    sectors = d.groupby("Sector")["Value"].sum() / d["Value"].sum() * 100
-    if sectors.max() > 40:
+    total = d["Value"].sum()
+    by_ticker = d.groupby("Ticker")["Value"].sum().sort_values(ascending=False)
+    if by_ticker.iloc[0] / total * 100 > 25 and len(by_ticker) > 1:
+        notes.append(f"{by_ticker.index[0]} is {by_ticker.iloc[0] / total * 100:.0f}% of your portfolio. One stock above "
+                     "~25% makes results depend heavily on it.")
+    sectors = d.groupby("Sector")["Value"].sum() / total * 100
+    if sectors.max() > 40 and len(sectors) > 1:
         notes.append(f"{sectors.idxmax()} makes up {sectors.max():.0f}% of the portfolio. Consider spreading across sectors.")
-    if len(d) < 8:
-        notes.append(f"Only {len(d)} positions. Most investors diversify across at least 8-10 holdings or use broad ETFs.")
-    big_loss = d[d["Gain %"] < -20]
+    if len(by_ticker) < 8:
+        notes.append(f"Only {len(by_ticker)} different holdings. Most investors diversify across at least 8-10 holdings "
+                     "or use broad ETFs.")
+    gain = d.groupby("Ticker").apply(lambda g: (g["Value"].sum() / g["Cost"].sum() - 1) * 100 if g["Cost"].notna().all()
+                                     and g["Cost"].sum() > 0 else np.nan)
+    big_loss = gain[gain < -20]
     if not big_loss.empty:
-        notes.append("Down more than 20% vs your cost: " + ", ".join(big_loss["Ticker"]) + ".")
-    payers = d[d["Annual Div $"] > 0]
-    if payers.empty:
+        notes.append("Down more than 20% vs your cost: " + ", ".join(big_loss.index) + ".")
+    if d["Annual Div $"].sum() <= 0:
         notes.append("None of your holdings pay a dividend, so the dividend and DRIP projections will be empty.")
     return notes
