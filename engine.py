@@ -574,6 +574,24 @@ def empty_reason(ticker, spot, counts, p):
     return f"{ticker}: no candidates (spot: ${spot:.2f}). {funnel}.{hint}"
 
 
+# ---------------- Market hours ----------------
+
+
+def us_market_status():
+    """(is_open, message) for regular US trading hours (9:30-16:00 New York time, Mon-Fri; holidays not checked)."""
+    try:
+        from zoneinfo import ZoneInfo
+        now = datetime.now(ZoneInfo("America/New_York"))
+    except Exception:
+        return True, ""
+    minutes = now.hour * 60 + now.minute
+    if now.weekday() < 5 and 9 * 60 + 30 <= minutes < 16 * 60:
+        return True, ""
+    return False, (f"The US market is closed (it is {now:%a %H:%M} in New York). Yahoo shows no live bids on options "
+                   "outside trading hours, so scans can come back empty or use stale prices. Scan between about "
+                   "9:45 AM and 4:00 PM New York time (Mon-Fri) for reliable results.")
+
+
 # ---------------- Market regime ----------------
 
 
