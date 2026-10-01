@@ -4,3 +4,5 @@ __pycache__/
 trade_journal.csv
 .streamlit/secrets.toml
 .DS_Store
+portfolio.csv
+watchlist.csv

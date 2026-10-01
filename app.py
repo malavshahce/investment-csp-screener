@@ -11,6 +11,13 @@ import streamlit as st
 
 import engine as E
 import journal as J
+import markets as MK
+import view_income
+import view_lookup
+import view_market
+import view_portfolio
+import view_watchlist
+from common import REFRESH_CHOICES, md, money
 
 st.set_page_config(page_title="Cash-Secured Put Screener", layout="wide", initial_sidebar_state="collapsed")
 
@@ -110,9 +117,17 @@ _saved = st.query_params.get("theme", DEFAULT_THEME)
 if "theme" not in st.session_state:
     st.session_state["theme"] = _saved if _saved in THEMES else DEFAULT_THEME
 
-head_l, head_r = st.columns([5, 1.2])
+head_l, head_m, head_r = st.columns([4, 1.7, 1.3])
 with head_r:
     theme_name = st.selectbox("🎨 Theme", list(THEMES), key="theme")
+with head_m:
+    refresh_choice = st.selectbox("🔄 Auto-refresh", list(REFRESH_CHOICES), key="refresh_choice",
+                                  help="How often the live tabs (Market, Lookup, Watchlist, Portfolio) re-download "
+                                       "prices on their own. Each panel shows when its data was fetched.")
+    st.session_state["refresh_secs"] = REFRESH_CHOICES[refresh_choice]
+    if st.button("Refresh now", key="refresh_now", width="stretch"):
+        MK.clear_live_caches()
+        st.rerun()
 st.query_params["theme"] = theme_name  # keeps your choice after a page refresh
 st.markdown(theme_css(THEMES[theme_name]), unsafe_allow_html=True)
 
@@ -124,15 +139,6 @@ with head_l:
         unsafe_allow_html=True,
     )
 st.write("")
-
-
-def money(x):
-    return f"-${abs(x):,.0f}" if x < 0 else f"${x:,.0f}"
-
-
-def md(text):
-    """st.markdown that treats $ literally (no LaTeX)."""
-    st.markdown(text.replace("$", "\\$"))
 
 
 # ---------------- Strategy presets ----------------
@@ -186,12 +192,28 @@ if _APP_PASSWORD and not st.session_state.get("authed"):
 
 ON_CLOUD = str(Path(__file__).resolve()).startswith("/mount/src")
 
-tab_scan, tab_journal, tab_guide = st.tabs(["Scanner", "Journal", "Guide"])
+(tab_market, tab_lookup, tab_watch, tab_portfolio, tab_income,
+ tab_scan, tab_journal, tab_guide) = st.tabs(["Market", "Lookup", "Watchlist", "Portfolio", "Income",
+                                              "Put Scanner", "Journal", "Guide"])
+
+with tab_market:
+    view_market.render()
+with tab_lookup:
+    view_lookup.render()
+with tab_watch:
+    view_watchlist.render()
+with tab_portfolio:
+    view_portfolio.render(on_cloud=ON_CLOUD, has_password=bool(_APP_PASSWORD))
+with tab_income:
+    view_income.render()
 
 # =====================================================================
 # SCANNER
 # =====================================================================
 with tab_scan:
+    _open, _closed_msg = E.us_market_status()
+    if not _open:
+        st.warning(_closed_msg)
     st.radio("Trading style", list(PRESETS), index=list(PRESETS).index(DEFAULT_STYLE), horizontal=True,
              key="strategy", on_change=apply_preset)
     st.caption(PRESETS[st.session_state.get("strategy", DEFAULT_STYLE)]["note"])
@@ -276,6 +298,13 @@ with tab_scan:
                                          help="Most liquid first. Roughly 0.6 seconds per ticker: 400 ≈ 4 min, "
                                               "1,500 ≈ 15 min.")
 
+            h2 = st.columns(4)
+            allow_stale = h2[0].checkbox(
+                "Use last-trade prices when the market is closed", value=not _open,
+                help="After hours Yahoo shows no live bids, so scans find nothing. Turn this on to plan for the next "
+                     "session using each option's last traded price. Those rows are labeled and may be hours or "
+                     "days old: always re-check live prices before trading.")
+
         run_button = st.form_submit_button("Run scan", type="primary", width="stretch")
 
     tickers = [t.strip().upper() for t in tickers_input.replace("\n", ",").split(",") if t.strip()]
@@ -303,7 +332,7 @@ with tab_scan:
                 max_spread_pct=max_spread_pct, top_n=top_n, min_otm_pct=min_otm_pct,
                 min_hist_win=min_hist_win, min_premium_usd=min_premium_usd,
                 max_contract_cost=max_contract_cost, exclude_earnings=exclude_earnings,
-                skip_downtrend=skip_downtrend, below_sma=below_sma, require_edge=require_edge,
+                skip_downtrend=skip_downtrend, below_sma=below_sma, require_edge=require_edge, allow_stale=allow_stale,
                 rank_by=rank_label,
             )
             results, notes_map, near_miss, relaxed_used = {}, {}, [], False
@@ -406,6 +435,10 @@ with tab_scan:
                     f"{mi['passed']:,} pass your price/volume/cash filters → scanned the {mi['scanning']:,} most "
                     f"liquid ones (raise 'Max tickers to scan' to cover more).")
 
+        if any((d.get("Quote", "") != "").any() for d in scan_state["results"].values()):
+            st.warning("Some prices are **last-trade prices from when the market was closed** (marked in the Price "
+                       "source column). Use these to plan, then re-check live bids and asks when the market opens.")
+
         if scan_state.get("relaxed_used"):
             st.warning("Few trades passed your strict filters, so I also ran looser ones (" + E.RELAXED_NOTE +
                        "). Those rows are marked **Relaxed filters**. Liquidity is thinner there: use limit orders "
@@ -436,7 +469,7 @@ with tab_scan:
                                     acct["max_positions"], acct["max_lev_pct"], rank_col,
                                     CONTRACT_CHOICES[contracts_label])
 
-        display_cols = ["Relaxed", "Expiration", "DTE", "Strike", "% OTM", "Distance (σ)", "Premium (Bid)", "Mid",
+        display_cols = ["Relaxed", "Quote", "Expiration", "DTE", "Strike", "% OTM", "Distance (σ)", "Premium (Bid)", "Mid",
                         "Premium $", "Delta", "Est. Win Prob %", "Hist. Win %", "Win % (cons.)", "Edge $",
                         "Annualized Yield %", "Return/Day %", "Score", "Lev", "IV/HV", "Trend", "RSI",
                         "P&L @ -10% $", "P&L @ -20% $", "Exit Target ($)", "Next Earnings",
@@ -472,6 +505,7 @@ with tab_scan:
             "RSI": st.column_config.NumberColumn("RSI", format="%d"),
             "Contracts": st.column_config.NumberColumn("Contracts", format="%d"),
             "Relaxed": st.column_config.TextColumn("Filters"),
+            "Quote": st.column_config.TextColumn("Price source"),
             "% of cash": st.column_config.NumberColumn("% of cash", format="%.0f%%"),
             "Sell limit (mid)": st.column_config.NumberColumn("Sell limit (mid)", format="$%.2f"),
             "Cash secured $": st.column_config.NumberColumn("Cash secured", format="$%d"),
@@ -512,7 +546,7 @@ with tab_scan:
                 show_table(plan, ["Ticker", "Expiration", "DTE", "Strike", "Contracts", "Sell limit (mid)",
                                   "Premium $", "Cash secured $", "Win % (cons.)", "Edge $",
                                   "P&L @ -10% $", "P&L @ -20% $", "% of cash", "Breakeven", "Trend", "Earnings Alert",
-                                  "Relaxed"])
+                                  "Relaxed", "Quote"])
 
                 neg_edge = plan[plan["Edge $"] < 0]
                 if not neg_edge.empty:
@@ -545,7 +579,7 @@ with tab_scan:
                     with st.expander(f"Next-best candidates that didn't fit the plan ({len(others)} tickers)"):
                         show_table(others.head(25), ["Ticker", "Expiration", "DTE", "Strike", "Premium $",
                                                      "Win % (cons.)", "Edge $", "Capital Req. $", "Trend",
-                                                     "Earnings Alert", "Relaxed"])
+                                                     "Earnings Alert", "Relaxed", "Quote"])
 
                 md("- **Sell limit (mid)** is the price to enter as a limit order; the premium shown assumes the "
                    "lower **bid**, so it is conservative.\n"
@@ -700,6 +734,42 @@ with tab_journal:
 # =====================================================================
 with tab_guide:
     st.subheader("How to use this tool")
+    with st.expander("Tour of the tabs", expanded=True):
+        md("""
+- **Market:** the day's big picture. Index levels (S&P 500, Nasdaq, Dow, Russell 2000), the VIX fear gauge, Treasury yields, gold, oil, bitcoin and the dollar, plus how each sector is doing and the biggest movers among ~80 heavily traded stocks.
+- **Lookup:** search any company or ticker. You get the live price, a chart with 50- and 200-day averages, key stats (P/E, market cap, beta, dividend yield, analyst targets), dividend history, news, a side-by-side compare, and a one-click list of cash-secured put ideas for that stock.
+- **Watchlist:** the stocks you follow, with price, daily/5-day/1-month change, where each sits in its 52-week range, analyst upside and yield. Set **alert prices**: when a price crosses one, a banner and pop-up appear.
+- **Portfolio (private):** enter your holdings (or import your broker's CSV) to see live value, today's change, gain/loss, allocation by stock and sector, dividends you will receive, a one-year comparison against the S&P 500, upcoming earnings and ex-dividend dates, and plain-language warnings about concentration. A **Hide amounts** switch blurs the numbers if someone is looking at your screen.
+- **Income:** the **Dividend calculator** shows what a position pays per year, month, week and day, and what you need to invest for a target monthly income. The **DRIP calculator** compares reinvesting dividends against taking them as cash, with monthly contributions, dividend tax, and a table of "what if the price grows faster or slower". Load any real stock to fill in its actual price, dividend, payout schedule and growth.
+- **Put Scanner / Journal:** the cash-secured put tools described below.
+- **Refreshing:** every live panel shows a **🕒 Updated** time that is when the data was really downloaded. Use **Refresh now** in the header for fresh data, or switch on **Auto-refresh** (30 seconds to 15 minutes). Prices are cached for about a minute so repeated clicks don't hammer Yahoo.
+""")
+
+    with st.expander("Stocks, dividends & portfolio terms"):
+        md("""
+- **Ticker:** the short code for a stock or fund (AAPL for Apple).
+- **Market cap:** the company's total value (share price x number of shares). Above ~$10B is "large cap".
+- **P/E ratio:** price divided by yearly earnings per share. High means investors pay a lot per dollar of profit. *Trailing* uses past earnings, *forward* uses expected earnings.
+- **Beta:** how much a stock tends to move compared with the market. 1.0 moves like the market; 1.5 swings 50% more; 0.5 swings half as much.
+- **52-week range:** the lowest and highest price over the past year. "Near the low" can mean cheap or can mean in trouble.
+- **Analyst target:** the average price Wall Street analysts expect in about a year. Treat it as one opinion, not a promise.
+- **ETF:** a fund that trades like a stock and holds many investments (SPY holds the S&P 500). **Expense ratio** is its yearly fee.
+- **Dividend:** a cash payment a company makes to its shareholders, usually every quarter.
+- **Dividend yield:** yearly dividend divided by the share price. A $100 stock paying $3 a year yields 3%.
+- **Yield on cost:** yearly dividend divided by what you originally paid. It rises over time if the company keeps raising the dividend.
+- **Payout ratio:** the share of profits paid out as dividends. Above ~80% can mean the dividend is hard to sustain.
+- **Ex-dividend date:** you must own the stock before this date to receive the next dividend.
+- **Dividend growth / CAGR:** the average yearly rate the dividend has grown. **Increase streak** counts consecutive years of raises.
+- **DRIP (dividend reinvestment plan):** automatically using each dividend to buy more shares, which then pay their own dividends. This compounding is why the DRIP column grows faster than taking cash.
+- **Compounding:** growth on top of earlier growth. Small differences in yield or growth add up a lot over 20-30 years.
+- **Cost basis / average cost:** the average price you paid per share. Gain = (current price - average cost) x shares.
+- **Weight:** the share of your portfolio each holding makes up. **Concentration** means too much in one stock or sector.
+- **Sector:** the industry group a company belongs to (Technology, Energy, Utilities...). Spreading across sectors reduces the damage from a bad year in one.
+- **Portfolio beta:** your holdings' betas averaged by weight: how jumpy the whole portfolio is compared with the market.
+- **Treasury yield (10-year):** what the US government pays to borrow for 10 years. Rising yields can pressure stock prices and boost bond appeal.
+- **Sector ETFs (XLK, XLF...):** funds that track one sector. The Market tab uses them to show which sectors are leading or lagging.
+""")
+
     with st.expander("Your daily routine (about 5 minutes)", expanded=True):
         md("""
 1. **Check your open trades first.** Journal tab → *Refresh live P&L*. Close anything marked *Close now* (70%+ of the premium captured) and think about anything *At risk* or *ITM*.
@@ -786,6 +856,7 @@ with tab_guide:
     with st.expander("Limits — read this"):
         md("""
 - **Yahoo data is delayed and imperfect** (about 15 minutes; open interest and implied volatility can be stale or missing). Always confirm live prices at your broker before trading. For daily trades, a broker data feed is worth it.
+- **After-hours scans use last-trade prices.** When the market is closed Yahoo has no live bids, so the scanner (if you leave 'Use last-trade prices when the market is closed' on) works from each option's last trade and recomputes implied volatility itself, because Yahoo's after-hours volatility numbers are placeholders. Rows are labeled in the *Price source* column. Treat them as a plan for the next session, and re-check live bids at the open.
 - **Probabilities are estimates.** Models assume smooth price moves; real markets gap. Gaps and crashes are where put sellers lose the most.
 - **Past results don't predict future results.** Historical win % only reflects the last ~3 years.
 - **This tool screens; it doesn't guarantee profit.** Selling puts earns small steady income and can take large losses in a sell-off. Size so that a bad week is survivable.
