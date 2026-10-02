@@ -347,6 +347,16 @@ def relax_params(p):
     )
 
 
+def widen_params(p):
+    """Last-resort search: relaxed liquidity/probability AND earnings/downtrend/history filters off, longer window.
+    Used only when the stricter passes found almost nothing; rows are labeled so the extra risk is visible."""
+    from dataclasses import replace
+    r = relax_params(p)
+    return replace(r, exclude_earnings=False, skip_downtrend=False, below_sma=False, require_edge=False,
+                   min_hist_win=0, min_otm_pct=0.0, min_premium_usd=min(p.min_premium_usd, 5),
+                   win_prob_min=max(50, p.win_prob_min - 12), min_dte=max(1, p.min_dte - 2), max_dte=p.max_dte + 10)
+
+
 RELAXED_NOTE = ("min premium $5, min open interest 100, max spread 25%, win probability 7 points lower, "
                 "min historical win 60%")
 
