@@ -6,7 +6,7 @@ import streamlit as st
 import calc
 import engine as E
 import markets as MK
-from common import _show, big_number, category_bar, kpi, line_chart, live_panel, md, pct, updated_caption
+from common import _show, esc, big_number, category_bar, kpi, line_chart, live_panel, md, pct, updated_caption
 
 
 def _pick_symbol():
@@ -52,6 +52,11 @@ def _header(symbol, quote, prof):
     kpi(c[3], "Dividend yield", f"{dy:.2f}%" if dy else "None", f"${rate:.2f}/yr" if dy else None)
     beta = prof.get("beta")
     kpi(c[4], "Beta", f"{beta:.2f}" if beta else "—", "vs market (1.0)")
+    ext, _ = MK.get_extended_prices((symbol,))
+    if not ext.empty:
+        e = ext.iloc[0]
+        st.markdown(esc(f"**{e['Session']}: ${e['Ext Price']:,.2f}** ({e['Ext %']:+.2f}% vs the ${e['Close']:,.2f} close) "
+                        f"· last trade {e['Ext Time']} New York time. Options don't trade in this session."))
     _range_bar(prof.get("fiftyTwoWeekLow"), prof.get("fiftyTwoWeekHigh"), price)
     tgt, rec = prof.get("targetMeanPrice"), prof.get("recommendationKey")
     if tgt:

@@ -316,13 +316,61 @@ def get_same_day_expiries(symbols):
         rows.append({"Symbol": s, "Price": float(q.loc[s, "Price"]) if s in q.index else float("nan"),
                      "Day %": float(q.loc[s, "Day %"]) if s in q.index else float("nan"),
                      "Expiries this week": h["Expiries this week"]})
-    return pd.DataFrame(rows), _now()
+    df = pd.DataFrame(rows)
+    ext, _ = get_extended_prices(tuple(df["Symbol"]))
+    if not ext.empty:
+        e = ext.set_index("Symbol")
+        df["Pre/after-hours price"] = df["Symbol"].map(e["Ext Price"])
+        df["Pre/after-hours %"] = df["Symbol"].map(e["Ext %"])
+    return df, _now()
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def get_extended_prices(symbols):
+    """Pre-market (4:00-9:30 AM New York) and after-hours (4:00-8:00 PM) stock prices. Options do not trade in these
+    sessions, but the stock does, and a gap changes how safe a strike is. Returns (DataFrame, fetched_at) with
+    Symbol, Ext Price, Session, Ext Time, Close, Ext %; empty during regular hours or when nothing has traded."""
+    from zoneinfo import ZoneInfo
+    ny = ZoneInfo("America/New_York")
+    symbols = tuple(dict.fromkeys(s.upper() for s in symbols))
+    rows = []
+    if symbols and not E.us_market_status()[0]:
+        quotes, _ = get_quotes(symbols)                       # last regular-session close for each symbol
+        closes = quotes.set_index("Symbol")["Price"] if not quotes.empty else pd.Series(dtype=float)
+        today = E.ny_today()
+        for i in range(0, len(symbols), 120):                 # chunks keep each download small and fast
+            chunk = symbols[i:i + 120]
+            try:
+                raw = E.with_retry(lambda: yf.download(list(chunk), period="1d", interval="1m", prepost=True,
+                                                       progress=False, group_by="ticker", threads=True,
+                                                       auto_adjust=True), attempts=2)
+            except Exception:
+                continue
+            for sym in chunk:
+                sub = _extract(raw, sym)
+                if sub is None or "Close" not in sub or sym not in closes.index:
+                    continue
+                c = sub["Close"].dropna()
+                if c.empty:
+                    continue
+                t = c.index[-1].tz_convert(ny) if c.index.tz is not None else c.index[-1]
+                if t.date() != today:
+                    continue
+                hhmm = t.hour * 60 + t.minute
+                session = "Pre-market" if hhmm < 9 * 60 + 30 else "After hours" if hhmm >= 16 * 60 else None
+                if not session:
+                    continue
+                price, close = float(c.iloc[-1]), float(closes[sym])
+                rows.append({"Symbol": sym, "Ext Price": price, "Session": session, "Ext Time": f"{t:%H:%M}",
+                             "Close": close, "Ext %": (price / close - 1) * 100})
+    cols = ["Symbol", "Ext Price", "Session", "Ext Time", "Close", "Ext %"]
+    return pd.DataFrame(rows, columns=cols), _now()
 
 
 def clear_live_caches():
     """Drop every cached live dataset so the next render downloads fresh data."""
     for fn in (get_quotes, get_history, get_price_matrix, get_profile, get_profiles, get_news, get_dividend_history,
-               get_regime, get_events, search_symbols, get_same_day_expiries):
+               get_regime, get_events, search_symbols, get_same_day_expiries, get_extended_prices):
         fn.clear()
 
 
