@@ -1,5 +1,6 @@
 import hmac
 import io
+import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
@@ -8,6 +9,28 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import streamlit as st
+
+
+# ---- Reload guard -------------------------------------------------------------------------------------------
+# After a redeploy, Streamlit Cloud can keep OLD copies of this project's modules in memory while it loads the new
+# app.py, which shows up as "ImportError: cannot import name ..." until someone reboots the app. This notices when
+# any project file changed and drops the cached copies, so every import below is fresh.
+def _reload_project_modules():
+    here = Path(__file__).resolve().parent
+    files = sorted(here.glob("*.py"))
+    build = tuple((f.name, f.stat().st_mtime_ns, f.stat().st_size) for f in files)
+    previous = getattr(sys, "_csp_build", None)
+    if previous != build:
+        for f in files:
+            if f.stem != Path(__file__).stem:
+                sys.modules.pop(f.stem, None)
+        if previous is not None:
+            st.cache_data.clear()
+        sys._csp_build = build
+
+
+_reload_project_modules()
+# ---- end reload guard ---------------------------------------------------------------------------------------
 
 import engine as E
 import journal as J
