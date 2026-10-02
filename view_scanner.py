@@ -1,5 +1,6 @@
 """Put Scanner tab, kept simple: choose a style, your cash and how many stocks to search, press one button.
 Nothing is hidden by filters: every put that has a price is shown, with plain warnings (Heads-up) for the odd ones."""
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
@@ -109,7 +110,10 @@ def _execute(tickers, params, status):
 
     workers = E.MAX_WORKERS if len(tickers) <= 120 else 3
     failed = run_pass(tickers, workers, "Searching")
-    for attempt, cooldown in enumerate((20, 40), start=1):
+    # A big search can hit Yahoo's rate limit, so pause and retry. For a few typed symbols a failure almost always
+    # means a wrong symbol, so retry once, quickly.
+    cooldowns = (2,) if len(tickers) <= 10 else (20, 40)
+    for attempt, cooldown in enumerate(cooldowns, start=1):
         if not failed:
             break
         status.update(label=f"Yahoo is busy: pausing {cooldown}s then retrying {len(failed)} stock(s)…")
@@ -117,7 +121,8 @@ def _execute(tickers, params, status):
         failed = run_pass(failed, 1 if attempt == 2 else 2, f"Retry {attempt}")
 
     notes = [v for t, v in notes_map.items() if t not in results]
-    notes += [f"{t}: could not fetch price/options data (Yahoo may be busy; try again shortly)." for t in failed]
+    notes += [f"{t}: no price data came back. Check the symbol is spelled right (class shares use a dash, e.g. BRK-B), "
+              "or try again in a minute if Yahoo was busy." for t in failed]
     return results, notes, []
 
 
@@ -153,8 +158,9 @@ def _heads_up(row):
     return ", ".join(flags)
 
 
-def _top_picks(summary, rank_col, deployable, limit=15):
-    best = summary.drop_duplicates("Ticker").head(limit)   # summary is already sensible-first, then ranked
+def _top_picks(summary, rank_col, deployable, limit=15, one_per_stock=True):
+    # summary is already sensible-first, then ranked
+    best = (summary.drop_duplicates("Ticker") if one_per_stock else summary).head(limit)
     view = pd.DataFrame({
         "Stock": best["Ticker"].values,
         "Sell this put": [f"${k:g} put" for k in best["Strike"]],
@@ -186,7 +192,8 @@ def _top_picks(summary, rank_col, deployable, limit=15):
                                                                 "at least $10."),
         "Heads-up": _CC.TextColumn("Heads-up", width="large"),
     })
-    st.caption("**How to read this:** one row per stock, its best put (contracts that *look sensible* are listed first). You are paid *You collect* today for agreeing to "
+    st.caption("**How to read this:** " + ("one row per stock, its best put" if one_per_stock else "the best puts on this stock") +
+               " (contracts that *look sensible* are listed first). You are paid *You collect* today for agreeing to "
                "buy 100 shares at the strike price if the stock ends below it at expiry. If it stays above, you keep the "
                "money. *Cash to set aside* is what must sit in your account to cover buying the shares. Nothing is hidden: "
                "unusual contracts are shown with a *Heads-up*; **All details** has every contract.")
@@ -264,6 +271,25 @@ def _details_tab(summary, scan, rank_col):
             md("\n".join(f"- {n}" for n in scan["notes"][:200]))
 
 
+def _stock_cards(scan, summary):
+    """When you looked up specific stocks: one summary row each, plus a plain reason for any with no puts."""
+    for t in scan["specific"]:
+        d = summary[summary["Ticker"] == t]
+        if d.empty:
+            why = [n for n in scan["notes"] if n.startswith(t + ":")]
+            st.warning(f"**{t}**: " + (why[0].split(":", 1)[1].strip() if why else "no put prices found in this expiry "
+                                          "window. Check the symbol, or try another style."))
+            continue
+        r = d.iloc[0]
+        c = st.columns(6)
+        kpi(c[0], t, f"${r['Spot Price']:,.2f}", "stock price")
+        kpi(c[1], "Trend", str(r["Trend"]), f"RSI {r['RSI']:.0f}" if r["RSI"] == r["RSI"] else None)
+        kpi(c[2], "Put contracts", f"{len(d):,}", f"{d['Expiration'].nunique()} expiry date(s)")
+        kpi(c[3], "Next earnings", str(r["Next Earnings"]), "earnings before expiry" if (d["Earnings Alert"] != "").any() else None)
+        kpi(c[4], "50-day average", f"${r['50D SMA']:,.2f}")
+        kpi(c[5], "52-week low", f"${r['52W Low']:,.2f}")
+
+
 def _show_results(scan):
     acct = scan["acct"]
     rank_col = E.RANK_OPTIONS[scan["rank_by"]]
@@ -272,6 +298,12 @@ def _show_results(scan):
     if regime.get("vix") is not None:
         spy = f" · S&P 500 {regime['spy_trend'].lower()}" if regime.get("spy_trend") else ""
         st.caption(f"Market mood: VIX {regime['vix']:.1f} ({regime['level']}){spy}. {regime['advice']}")
+
+    if not scan["results"] and scan.get("specific"):
+        _stock_cards(scan, pd.DataFrame({"Ticker": []}))   # a plain reason for each stock typed
+        st.markdown("**Try:** another style (the stock may have no expiry date in this window), or check the symbol "
+                    "(class shares use a dash, e.g. BRK-B).")
+        return
 
     if not scan["results"]:
         st.error("No put prices were found for these stocks and expiry dates.")
@@ -295,6 +327,19 @@ def _show_results(scan):
     summary = (summary.assign(_ok=sensible).sort_values(["_ok", rank_col], ascending=[False, False], na_position="last")
                .drop(columns="_ok").reset_index(drop=True))
 
+    if not scan.get("specific"):
+        flt = st.text_input("Show only these stocks (optional)", key="sc_filter",
+                            placeholder="type symbols to narrow the results below, e.g. NVDA, TSLA")
+        wanted = {_norm(t) for t in re.split(r"[,\s;]+", flt or "") if t.strip()}
+        if wanted:
+            summary = summary[summary["Ticker"].isin(wanted)].reset_index(drop=True)
+            if summary.empty:
+                st.info("None of those stocks have contracts in this search. They may be outside the stocks searched, "
+                        "or have no puts in this expiry window. Use *look up specific stocks* above to search them directly.")
+                return
+    else:
+        _stock_cards(scan, summary)
+
     hide = st.checkbox("Hide contracts nobody has traded (0 open interest and 0 volume)", value=False, key="sc_hide0",
                        help="Off by default so you see everything. Turn on to remove contracts with no activity.")
     if hide:
@@ -310,7 +355,7 @@ def _show_results(scan):
     t_top, t_plan, t_all = st.tabs(["Top picks", "My plan", "All details"])
     with t_top:
         deployable = acct["capital"] * (1 - acct["reserve_pct"] / 100)
-        best = _top_picks(summary, rank_col, deployable)
+        best = _top_picks(summary, rank_col, deployable, limit=15, one_per_stock=not scan.get("specific"))
         st.markdown("##### The top three, in plain words")
         _in_words(best)
     with t_plan:
@@ -322,16 +367,24 @@ def _show_results(scan):
 # ---------------- Page ----------------
 
 
-def _ticker_list(extra, groups, how_many, include_etfs, mk_price, mk_vol):
-    """Stocks to search: the N most traded optionable US stocks, plus popular ETFs, any extra groups, and your own
-    symbols. Nothing is dropped for being expensive; every stock that has options is eligible."""
+def _norm(sym):
+    """AAPL / aapl / BRK.B -> AAPL / AAPL / BRK-B (the form Yahoo uses)."""
+    return sym.strip().upper().replace(".", "-").replace("/", "-")
+
+
+def _ticker_list(specific, groups, how_many, include_etfs, mk_price, mk_vol):
+    """If you typed specific stocks, search exactly those. Otherwise search the N most traded optionable US stocks
+    plus popular ETFs and any extra groups. Nothing is dropped for being expensive."""
+    typed = [_norm(t) for t in re.split(r"[,\s;]+", specific or "") if t.strip()]
+    if typed:
+        typed = list(dict.fromkeys(typed))
+        return typed, {"optionable": 0, "priced": 0, "passed": 0, "scanning": len(typed), "error": None, "specific": True}
     mk, info = E.build_market_universe(float("inf"), mk_price, mk_vol, HOW_MANY[how_many])
     tickers = list(mk) if not info["error"] else list(E.LIQUID_STOCKS)
     if include_etfs:
         tickers += E.INDEX_ETFS + E.LEVERAGED_ETFS
     for g in groups:
         tickers += E.UNIVERSES[g]()
-    tickers += [t.strip().upper() for t in extra.replace("\n", ",").split(",") if t.strip()]
     return list(dict.fromkeys(tickers))[:E.MAX_TICKERS], info
 
 
@@ -370,27 +423,29 @@ def render():
                 "(marked in *Heads-up*) so you can plan ahead. Same-day trades need the market open.")
 
     with st.form("scanner_form", border=True):
-        c = st.columns([2.6, 1.0, 1.5, 1.0])
+        c = st.columns([2.8, 1.0, 1.0])
         style = c[0].radio("How often do you want to trade?", list(STYLES), index=list(STYLES).index(DEFAULT_STYLE),
                            key="sc_style", horizontal=True,
                            help="Sets how far away the expiry dates are.\n\n" +
                                 "\n\n".join(f"**{k}**: {v[4]}" for k, v in STYLES.items()))
         capital = c[1].number_input("Cash available ($)", min_value=1000, value=25000, step=1000, key="sc_cash",
                                     help="Used for the *Fits my cash* column and the plan. It never hides a stock.")
-        how_many = c[2].selectbox("How many stocks to search?", list(HOW_MANY), index=list(HOW_MANY).index(DEFAULT_HOW_MANY),
+        c[2].write("")
+        c[2].write("")
+        run = c[2].form_submit_button("Find put ideas", type="primary", width="stretch")
+        d = st.columns([1.3, 2.0])
+        how_many = d[0].selectbox("How many stocks to search?", list(HOW_MANY), index=list(HOW_MANY).index(DEFAULT_HOW_MANY),
                                   key="sc_howmany",
                                   help="The most traded optionable US stocks first (about 0.6 seconds per stock: 300 is "
                                        "about 3 minutes). 'Everything optionable' covers every US stock that has options.")
-        c[3].write("")
-        c[3].write("")
-        run = c[3].form_submit_button("Find put ideas", type="primary", width="stretch")
+        specific = d[1].text_input("…or look up specific stocks", "", key="sc_specific",
+                                   placeholder="type symbols, e.g. NVDA, AAPL, BRK.B (searches only these, every contract)",
+                                   help="Leave empty to search the stocks chosen on the left. If you type symbols, only "
+                                        "those are searched, whether or not they are among the most traded.")
 
         with st.expander("Advanced settings (optional)"):
-            a = st.columns([3, 2])
-            extra = a[0].text_input("Extra stocks to include (optional)", "", key="sc_extra",
-                                    placeholder="e.g. NVDA, AAPL, KO")
-            groups = a[1].multiselect("Add more groups (optional)", list(E.UNIVERSES), key="sc_groups", default=[],
-                                      help="Add a ready-made list on top of the search above.")
+            groups = st.multiselect("Add more groups (optional)", list(E.UNIVERSES), key="sc_groups", default=[],
+                                    help="Add a ready-made list on top of the search above.")
             m = st.columns(4)
             include_etfs = m[0].checkbox("Include popular ETFs", True, key="sc_etfs",
                                          help="SPY, QQQ, IWM, sector funds and leveraged funds.")
@@ -408,14 +463,15 @@ def render():
             lev_pct = b[3].number_input("Max in leveraged funds %", 0, 100, 15, 5, key="sc_lev")
             rank = b[4].selectbox("Rank ideas by", list(E.RANK_OPTIONS), key="sc_rank")
 
-    get_tickers = lambda: _ticker_list(extra, groups, how_many, include_etfs, mk_price, mk_vol)
+    get_tickers = lambda: _ticker_list(specific, groups, how_many, include_etfs, mk_price, mk_vol)
     _today_panel(get_tickers)
 
     if run:
         tickers, market_info = get_tickers()
-        if market_info["error"]:
+        if market_info["error"] and not market_info.get("specific"):
             st.warning(market_info["error"] + " Using the built-in list of ~80 most-traded stocks instead.")
-        rows_cap = ROWS_PER_STOCK[rows_label]
+        is_specific = bool(market_info.get("specific"))
+        rows_cap = ROWS_PER_STOCK["All strikes"] if is_specific else ROWS_PER_STOCK[rows_label]
         cap_note = len(tickers) > 600 and rows_cap > 50
         if cap_note:
             rows_cap = 50
@@ -433,7 +489,9 @@ def render():
         n_rows = sum(len(d) for d in results.values())
         st.session_state["scan_v2"] = {
             "results": results, "notes": notes, "regime": regime, "rank_by": rank, "style": style,
-            "label": f"{n_rows:,} put contracts across {len(results):,} of {len(tickers):,} stocks",
+            "label": f"{n_rows:,} put contracts across {len(results):,} of {len(tickers):,} "
+                     f"stock{'s' if len(tickers) != 1 else ''}",
+            "specific": tickers if is_specific else None,
             "fetched_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "market_info": market_info, "cap_note": cap_note,
             "acct": dict(capital=capital, reserve_pct=reserve, max_pos_pct=pos_pct, max_positions=max_pos,
                          max_lev_pct=lev_pct),
@@ -444,11 +502,11 @@ def render():
     if not scan:
         st.markdown("**How it works:** choose how often you trade, press **Find put ideas**, and you see the put contracts "
                     "on the most traded stocks, where you could be paid to agree to buy shares at a lower price. "
-                    "Nothing is hidden: unusual contracts carry a *Heads-up*. Nothing is bought until you place an order "
+                    "Type a symbol in *look up specific stocks* to see every contract for just that stock. Nothing is hidden: unusual contracts carry a *Heads-up*. Nothing is bought until you place an order "
                     "with your broker.")
         return
     mi = scan.get("market_info")
-    if mi and not mi["error"]:
+    if mi and not mi["error"] and not mi.get("specific"):
         st.caption(f"{mi['optionable']:,} optionable symbols → {mi['priced']:,} US stocks with prices → searched the "
                    f"{mi['scanning']:,} most traded.")
     if scan.get("cap_note"):
