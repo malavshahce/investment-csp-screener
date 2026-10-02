@@ -391,6 +391,7 @@ with tab_guide:
 - **Fits my cash:** compares the cash a put needs (strike x 100) with your available cash minus your reserve. It never hides a stock.
 - **My plan:** builds a basket from the contracts that look sensible, sized to your cash: one contract per stock by default, spread across as many different stocks as fit. Unlike the lists, the plan does apply safety rules, because it recommends what to actually do.
 - **Chance of keeping it:** the lower of the option-pricing model's estimate and how often the stock really finished above that strike in past windows of the same length.
+- **Pre-market and after-hours:** options only trade 9:30 AM-4:00 PM New York time, but the stock trades from 4:00 AM to 8:00 PM. When the market is closed, the scanner measures every strike from the stock's latest pre-market or after-hours price (marked in *Stock pre/after-hrs*), so a gap up or down is reflected in *Below price* and the chance of keeping the payment. Big moves (3%+) get a Heads-up. Option prices themselves are still last trades until the open.
 - **No live bid:** when the market is closed (or nobody is bidding) the scanner shows the option's last trade and recomputes implied volatility from it, because Yahoo's after-hours volatility numbers are placeholders. Treat those prices as a plan, and re-check at the open.
 """)
 

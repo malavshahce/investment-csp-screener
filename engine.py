@@ -353,6 +353,7 @@ class ScanParams:
     require_edge: bool = False
     allow_stale: bool = False   # use last-trade prices when there is no live bid/ask (market closed)
     show_all: bool = False      # never skip a put for liquidity / probability / volatility / spread / premium
+    ext_prices: object = None   # {symbol: (price, session, pct)}: pre-market / after-hours stock prices to use as "spot"
     rank_by: str = "Score"
 
 
@@ -399,6 +400,12 @@ def scan_ticker_for_csp(ticker_symbol, p):
         spot = float(closes.iloc[-1])
     except Exception:
         return pd.DataFrame(), None, counts
+
+    # Pre-market / after-hours: use the stock's latest extended-hours price as spot (options themselves don't trade there)
+    prev_close, ext_session, ext_pct = spot, "", np.nan
+    ext = (p.ext_prices or {}).get(ticker_symbol)
+    if ext:
+        spot, ext_session, ext_pct = float(ext[0]), ext[1], float(ext[2])
 
     hv = historical_volatility(closes, lookback_days=30)
     close_arr = closes.to_numpy(dtype=float)
@@ -566,6 +573,9 @@ def scan_ticker_for_csp(ticker_symbol, p):
             candidates.append({
                 "Ticker": ticker_symbol,
                 "Spot Price": round(spot, 2),
+                "Prev Close": round(prev_close, 2),
+                "Session": ext_session,
+                "Ext %": round(ext_pct, 2) if not np.isnan(ext_pct) else np.nan,
                 "Expiration": exp,
                 "DTE": dte,
                 "Strike": K,

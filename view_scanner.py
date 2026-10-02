@@ -42,7 +42,7 @@ HOW_MANY = {
 DEFAULT_HOW_MANY = "Top 300 most traded stocks"
 ROWS_PER_STOCK = {"All strikes": 1_000_000, "Best 50 per stock": 50, "Best 25 per stock": 25, "Best 10 per stock": 10}
 
-DETAIL_COLS = ["Looks sensible", "Heads-up", "Quote", "Expiration", "DTE", "Strike", "% OTM", "Distance (σ)", "Premium (Bid)", "Mid",
+DETAIL_COLS = ["Looks sensible", "Heads-up", "Quote", "Session", "Ext %", "Prev Close", "Expiration", "DTE", "Strike", "% OTM", "Distance (σ)", "Premium (Bid)", "Mid",
                "Premium $", "Delta", "Est. Win Prob %", "Hist. Win %", "Win % (cons.)", "Edge $",
                "Annualized Yield %", "Return/Day %", "Score", "Lev", "IV/HV", "Trend", "RSI", "P&L @ -10% $",
                "P&L @ -20% $", "Exit Target ($)", "Next Earnings", "Earnings Alert", "Ex-Div Alert", "Breakeven",
@@ -51,6 +51,8 @@ DETAIL_COLS = ["Looks sensible", "Heads-up", "Quote", "Expiration", "DTE", "Stri
 _CC = st.column_config
 COLUMN_CONFIG = {
     "Relaxed": _CC.TextColumn("Search"), "Quote": _CC.TextColumn("Price source"),
+    "Session": _CC.TextColumn("Session"), "Ext %": _CC.NumberColumn("Stock move", format="%+.1f%%"),
+    "Prev Close": _CC.NumberColumn("Last close", format="$%.2f"),
     "Heads-up": _CC.TextColumn("Heads-up", width="large"), "Looks sensible": _CC.TextColumn("Looks sensible"), "Volume": _CC.NumberColumn("Volume today", format="%d"),
     "IV %": _CC.NumberColumn("IV", format="%.0f%%"),
     "Est. Win Prob %": _CC.NumberColumn("Model win", format="%.1f%%"),
@@ -135,6 +137,9 @@ def _heads_up(row):
     flags = []
     if row.get("Quote"):
         flags.append(str(row["Quote"]).lower())
+    ep = row.get("Ext %")
+    if ep == ep and ep is not None and abs(ep) >= 3:
+        flags.append(f"stock {ep:+.1f}% {str(row.get('Session', '')).lower() or 'extended hours'}")
     if row.get("Earnings Alert"):
         flags.append("earnings before expiry")
     if row.get("Trend") == "Downtrend":
@@ -167,6 +172,7 @@ def _top_picks(summary, rank_col, deployable, limit=15, one_per_stock=True):
         "Sell this put": [f"${k:g} put" for k in best["Strike"]],
         "Expires": [("Today" if d == 0 else f"{e}  ({d} days)") for e, d in zip(best["Expiration"], best["DTE"])],
         "Below price": best["% OTM"].values,
+        "Stock move": best["Ext %"].values,
         "You collect": best["Premium $"].values,
         "Chance you keep it": best["Win % (cons.)"].values,
         "Return": best["Yield %"].values,
@@ -179,6 +185,9 @@ def _top_picks(summary, rank_col, deployable, limit=15, one_per_stock=True):
     st.dataframe(view, hide_index=True, width="stretch", column_config={
         "Below price": _CC.NumberColumn("Below price", format="%.1f%%",
                                         help="How far under today's price the strike is. A bigger gap is safer."),
+        "Stock move": _CC.NumberColumn("Stock pre/after-hrs", format="%+.1f%%",
+                                       help="How far the stock is trading from its last close in the pre-market or "
+                                            "after-hours session. Below price is measured from this price."),
         "You collect": _CC.NumberColumn("You collect", format="$%d", help="Paid to you today, per contract (100 shares)."),
         "Chance you keep it": _CC.ProgressColumn("Chance you keep it", format="%.0f%%", min_value=0, max_value=100,
                                                 help="Estimated chance the stock stays above the strike, so you keep "
@@ -283,7 +292,11 @@ def _stock_cards(scan, summary):
             continue
         r = d.iloc[0]
         c = st.columns(6)
-        kpi(c[0], t, f"${r['Spot Price']:,.2f}", "stock price")
+        if r.get("Session"):
+            kpi(c[0], f"{t} {str(r['Session']).lower()}", f"${r['Spot Price']:,.2f}",
+                f"{r['Ext %']:+.2f}% vs close ${r['Prev Close']:,.2f}")
+        else:
+            kpi(c[0], t, f"${r['Spot Price']:,.2f}", "stock price")
         kpi(c[1], "Trend", str(r["Trend"]), f"RSI {r['RSI']:.0f}" if r["RSI"] == r["RSI"] else None)
         kpi(c[2], "Put contracts", f"{len(d):,}", f"{d['Expiration'].nunique()} expiry date(s)")
         kpi(c[3], "Next earnings", str(r["Next Earnings"]), "earnings before expiry" if (d["Earnings Alert"] != "").any() else None)
@@ -410,7 +423,10 @@ def _today_panel(get_tickers):
                 st.success(f"{len(df)} of {n} stocks have options expiring today.")
                 st.dataframe(df, hide_index=True, width="stretch", column_config={
                     "Symbol": _CC.TextColumn("Stock"), "Price": _CC.NumberColumn(format="$%.2f"),
-                    "Day %": _CC.NumberColumn("Today", format="%+.2f%%"),
+                    "Day %": _CC.NumberColumn("Last session", format="%+.2f%%"),
+                    "Pre/after-hours price": _CC.NumberColumn("Pre/after-hours price", format="$%.2f"),
+                    "Pre/after-hours %": _CC.NumberColumn("Pre/after-hrs move", format="%+.2f%%",
+                                                         help="How far the stock is from its last close right now."),
                     "Expiries this week": _CC.NumberColumn("Expiry dates this week", format="%d",
                                                           help="Stocks with several dates this week have daily options.")})
                 st.caption(f"Checked {ts:%H:%M:%S}. Choose **Same day** below and press *Find put ideas* to see the "
@@ -447,6 +463,10 @@ def render():
         with st.expander("Advanced settings (optional)"):
             groups = st.multiselect("Add more groups (optional)", list(E.UNIVERSES), key="sc_groups", default=[],
                                     help="Add a ready-made list on top of the search above.")
+            use_ext = st.checkbox("Use pre-market / after-hours stock prices when the market is closed", True, key="sc_ext",
+                                  help="Options don't trade outside 9:30 AM-4:00 PM New York time, but the stock does. "
+                                       "This measures every strike from the stock's latest extended-hours price, so a "
+                                       "gap up or down is reflected. Option prices still come from the last trade.")
             m = st.columns(4)
             include_etfs = m[0].checkbox("Include popular ETFs", True, key="sc_etfs",
                                          help="SPY, QQQ, IWM, sector funds and leveraged funds.")
@@ -477,10 +497,17 @@ def render():
         if cap_note:
             rows_cap = 50
         dmin, dmax, _, _, _ = STYLES[style]
+        ext_map, ext_session = None, ""
+        if use_ext and not market_open:
+            ext_df, _ = MK.get_extended_prices(tuple(tickers))
+            if not ext_df.empty:
+                ext_map = {sym: (price, sess, pct) for sym, price, sess, pct in
+                           zip(ext_df["Symbol"], ext_df["Ext Price"], ext_df["Session"], ext_df["Ext %"])}
+                ext_session = ext_df["Session"].iloc[0]
         params = E.ScanParams(
             risk_free_rate=E.get_risk_free_rate(), min_dte=dmin, max_dte=dmax, win_prob_min=0, win_prob_max=100,
             min_oi=0, max_spread_pct=float("inf"), top_n=rows_cap, min_hist_win=0, min_premium_usd=0,
-            max_contract_cost=float("inf"), allow_stale=True, show_all=True, rank_by=rank)
+            max_contract_cost=float("inf"), allow_stale=True, show_all=True, ext_prices=ext_map, rank_by=rank)
         eta = max(1, round(len(tickers) * (0.25 if len(tickers) <= 120 else 0.6) / 60))
         with st.status(f"Searching {len(tickers):,} stocks (about {eta} min)…", expanded=False) as status:
             results, notes, _ = _execute(tickers, params, status)
@@ -494,6 +521,7 @@ def render():
                      f"stock{'s' if len(tickers) != 1 else ''}",
             "specific": tickers if is_specific else None,
             "fetched_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "market_info": market_info, "cap_note": cap_note,
+            "ext": (len(ext_map), len(tickers), ext_session) if ext_map else None,
             "acct": dict(capital=capital, reserve_pct=reserve, max_pos_pct=pos_pct, max_positions=max_pos,
                          max_lev_pct=lev_pct),
         }
@@ -510,6 +538,11 @@ def render():
     if mi and not mi["error"] and not mi.get("specific"):
         st.caption(f"{mi['optionable']:,} optionable symbols → {mi['priced']:,} US stocks with prices → searched the "
                    f"{mi['scanning']:,} most traded.")
+    if scan.get("ext"):
+        n_ext, n_all, sess = scan["ext"]
+        st.caption(f"📈 Stock prices include the **{sess.lower()}** session for {n_ext:,} of {n_all:,} stocks (options don't "
+                   "trade then, so option prices are still last trades). *Below price* is measured from the stock's "
+                   "latest extended-hours price.")
     if scan.get("cap_note"):
         st.caption("With this many stocks, the best 50 contracts per stock are kept so the page stays fast.")
     _show_results(scan)
