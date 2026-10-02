@@ -4,7 +4,7 @@ import streamlit as st
 
 import calc
 import markets as MK
-from common import category_bar, md, money, updated_caption
+from common import category_bar, kpi, line_chart, md, money, updated_caption
 from view_lookup import _preload_income
 
 _DEFAULTS = {"inc_symbol": "", "inc_price": 100.0, "inc_dps": 3.0, "inc_freq": "Quarterly",
@@ -73,7 +73,7 @@ def _dividend_calculator(price, dps, freq):
                    f"edit it there), your yearly income grows like this, without reinvesting.")
         out = pd.DataFrame({"Year": proj["Year"], "Annual income": proj["AnnualIncome"] * k,
                             "Total dividends so far": proj["CumDividends"]}).set_index("Year")
-        st.line_chart(out, height=260)
+        line_chart(out, height=260, zero=True)
     else:
         c = st.columns(2)
         target = c[0].number_input("Target income per month ($)", min_value=0.0, value=1000.0, step=100.0, key="inc_target")
@@ -139,30 +139,29 @@ def _drip_calculator(price, dps, freq):
     st.markdown("#### Results")
     m = st.columns(4)
     m[0].metric("Final value WITH reinvesting", money(d["Total"]), f"{money(d['Total'] - p['Total'])} vs not reinvesting")
-    m[1].metric("Final value WITHOUT reinvesting", money(p["Total"]), f"incl. {money(p['Cash'])} cash dividends", delta_color="off")
-    m[2].metric("Yearly dividend income (DRIP)", money(d["AnnualIncome"]),
-                f"vs {money(p['AnnualIncome'])} without", delta_color="off")
-    m[3].metric("Shares owned (DRIP)", f"{d['Shares']:,.1f}", f"from {shares0:,.1f}", delta_color="off")
+    kpi(m[1], "Final value WITHOUT reinvesting", money(p["Total"]), f"incl. {money(p['Cash'])} cash dividends")
+    kpi(m[2], "Yearly dividend income (DRIP)", money(d["AnnualIncome"]), f"vs {money(p['AnnualIncome'])} without")
+    kpi(m[3], "Shares owned (DRIP)", f"{d['Shares']:,.1f}", f"from {shares0:,.1f}")
     m = st.columns(4)
     m[0].metric("Total you put in", money(d["Invested"]))
     m[1].metric("Dividends received (after tax)", money(d["CumDividends"]))
-    m[2].metric("Yield on your cost", f"{d['YieldOnCost']:.1f}%", "yearly income ÷ money put in", delta_color="off")
+    kpi(m[2], "Yield on your cost", f"{d['YieldOnCost']:.1f}%", "yearly income ÷ money put in")
     hit = drip[drip["AnnualIncome"] / 12 >= target]
-    m[3].metric(f"Reach {money(target)}/month", f"Year {int(hit['Year'].iloc[0])}" if target and not hit.empty else "Not within range",
-                "dividends alone, with DRIP", delta_color="off")
+    kpi(m[3], f"Reach {money(target)}/month", f"Year {int(hit['Year'].iloc[0])}" if target and not hit.empty else "Not within range",
+        "dividends alone, with DRIP")
 
     chart = pd.DataFrame({"Reinvest dividends (DRIP)": drip["Total"], "Take dividends as cash": plain["Total"],
                           "Money you put in": drip["Invested"]}, index=drip["Year"])
     st.markdown("**Portfolio value over time**")
-    st.line_chart(chart, height=300)
+    line_chart(chart, height=300, zero=True)
     inc = pd.DataFrame({"With DRIP": drip["AnnualIncome"], "Without DRIP": plain["AnnualIncome"]}, index=drip["Year"])
     a, b = st.columns(2)
     with a:
         st.markdown("**Yearly dividend income**")
-        st.line_chart(inc, height=240)
+        line_chart(inc, height=240, zero=True)
     with b:
         st.markdown("**Shares owned (DRIP)**")
-        st.line_chart(pd.DataFrame({"Shares": drip["Shares"]}, index=drip["Year"]), height=240)
+        line_chart(pd.DataFrame({"Shares": drip["Shares"]}, index=drip["Year"]), height=240, zero=True)
 
     st.markdown("**What if the share price grows faster or slower?**")
     rows = []

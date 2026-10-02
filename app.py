@@ -17,7 +17,7 @@ import view_lookup
 import view_market
 import view_portfolio
 import view_watchlist
-from common import REFRESH_CHOICES, md, money
+from common import REFRESH_CHOICES, md, money, scatter
 
 st.set_page_config(page_title="Cash-Secured Put Screener", layout="wide", initial_sidebar_state="collapsed")
 
@@ -36,6 +36,8 @@ DEFAULT_THEME = "Midnight"
 
 def theme_css(t):
     # Streamlit draws tables on a canvas that ignores CSS colors; flip the dark grid to light on light themes.
+    chip_fix = ("" if t["dark"] else
+                '.stApp [data-testid="stMetricDelta"] { filter: brightness(0.52) saturate(1.5); }')
     table_fix = ("" if t["dark"] else
                  '.stApp [data-testid="stDataFrame"], .stApp [data-testid="stDataEditor"] '
                  '{ filter: invert(1) hue-rotate(180deg); }')
@@ -81,6 +83,10 @@ def theme_css(t):
 .stApp [data-baseweb="slider"] [role="slider"] {{ background: {t["primary"]} !important; }}
 .stApp [data-testid="stSliderThumbValue"], .stApp [data-testid="stTickBarMin"], .stApp [data-testid="stTickBarMax"] {{ color: {t["primary"]} !important; }}
 .stApp input[type="checkbox"], .stApp input[type="radio"] {{ accent-color: {t["primary"]}; }}
+/* progress bar track */
+.stApp [data-testid="stProgress"] [role="progressbar"] > div {{ background-color: {t["bg2"]} !important; }}
+.stApp [data-testid="stProgress"] [role="progressbar"] > div > div {{ background-color: transparent !important; }}
+.stApp [data-testid="stProgress"] [role="progressbar"] > div > div > div {{ background-color: {t["primary"]} !important; }}
 /* tables (canvas grid reads these variables) */
 .stApp [data-testid="stDataFrame"], .stApp [data-testid="stDataFrameResizable"], .stApp [data-testid="stDataEditor"] {{
     --gdg-bg-cell: {t["bg"]}; --gdg-bg-cell-medium: {t["bg2"]}; --gdg-bg-header: {t["bg2"]};
@@ -103,6 +109,7 @@ def theme_css(t):
 .stApp [data-baseweb="radio"]:has(input:checked) > div:first-child, .stApp [data-baseweb="checkbox"]:has(input:checked) > span:first-child {{
     background-color: {t["primary"]} !important; border-color: {t["primary"]} !important; }}
 {table_fix}
+{chip_fix}
 /* layout */
 .block-container {{padding-top: 2.2rem; max-width: 1400px;}}
 [data-testid="stSidebar"], [data-testid="stSidebarCollapsedControl"] {{display: none;}}
@@ -129,6 +136,7 @@ with head_m:
         MK.clear_live_caches()
         st.rerun()
 st.query_params["theme"] = theme_name  # keeps your choice after a page refresh
+st.session_state["palette"] = THEMES[theme_name]   # charts read this to match the theme
 st.markdown(theme_css(THEMES[theme_name]), unsafe_allow_html=True)
 
 with head_l:
@@ -212,55 +220,57 @@ with tab_income:
 # =====================================================================
 with tab_scan:
     _open, _closed_msg = E.us_market_status()
-    if not _open:
+    _has_scan = bool(st.session_state.get("scan"))
+    if not _open and not _has_scan:
         st.warning(_closed_msg)
-    st.radio("Trading style", list(PRESETS), index=list(PRESETS).index(DEFAULT_STYLE), horizontal=True,
-             key="strategy", on_change=apply_preset)
-    st.caption(PRESETS[st.session_state.get("strategy", DEFAULT_STYLE)]["note"])
+    with st.expander("⚙️ Scan settings", expanded=not _has_scan):
+        st.radio("Trading style", list(PRESETS), index=list(PRESETS).index(DEFAULT_STYLE), horizontal=True,
+                 key="strategy", on_change=apply_preset)
+        st.caption(PRESETS[st.session_state.get("strategy", DEFAULT_STYLE)]["note"])
 
-    with st.form("settings", border=True):
-        t1, t2 = st.columns([3, 2])
-        tickers_input = t1.text_input(
-            "Extra tickers (optional)", "", placeholder="e.g. NVDA, SOXL, AAPL — leave blank to scan only the universes",
-            help="Comma-separated, any number of symbols, added on top of the selected universes. "
-                 "Duplicates are removed.",
-        )
-        chosen_universes = t2.multiselect(
-            "Universes to scan", list(E.UNIVERSES) + [E.MARKET_UNIVERSE],
-            default=["Most-liquid stocks (~80)", "Index & sector ETFs"],
-            help="Adds every ticker in the list to the scan. Nasdaq-100 takes about a minute and the "
-                 "full S&P 500 about 5 minutes (Yahoo throttles large scans, so big lists run gently "
-                 "and retry automatically). 'Entire US options market' pre-filters every optionable US stock "
-                 "by price, volume and your cash (instantly, no Yahoo calls), then scans the most liquid ones "
-                 "first, up to the limit in 'Risk & ranking filters'. Results always come from live data.",
-        )
+        with st.form("settings", border=True):
+            t1, t2 = st.columns([3, 2])
+            tickers_input = t1.text_input(
+                "Extra tickers (optional)", "", placeholder="e.g. NVDA, SOXL, AAPL — leave blank to scan only the universes",
+                help="Comma-separated, any number of symbols, added on top of the selected universes. "
+                     "Duplicates are removed.",
+            )
+            chosen_universes = t2.multiselect(
+                "Universes to scan", list(E.UNIVERSES) + [E.MARKET_UNIVERSE],
+                default=["Most-liquid stocks (~80)", "Index & sector ETFs"],
+                help="Adds every ticker in the list to the scan. Nasdaq-100 takes about a minute and the "
+                     "full S&P 500 about 5 minutes (Yahoo throttles large scans, so big lists run gently "
+                     "and retry automatically). 'Entire US options market' pre-filters every optionable US stock "
+                     "by price, volume and your cash (instantly, no Yahoo calls), then scans the most liquid ones "
+                     "first, up to the limit in 'Risk & ranking filters'. Results always come from live data.",
+            )
 
-        st.markdown("**Your account**")
-        a = st.columns(5)
-        capital = a[0].number_input("Cash available ($)", min_value=1000, value=25000, step=1000,
-                                    help="Cash you can set aside to secure puts (strike × 100 per contract).")
-        reserve_pct = a[1].number_input("Keep in reserve %", min_value=0, max_value=90, value=10, step=5,
-                                        help="Cash you deliberately leave unused as a safety buffer.")
-        max_pos_pct = a[2].number_input("Preferred max per position %", min_value=1, max_value=100, value=15, step=5,
-                                        help="The plan sizes positions to stay within this share of your cash. "
-                                             "If the only affordable contract is bigger, one contract is still "
-                                             "allowed and flagged, as long as it fits your deployable cash.")
-        max_positions = a[3].number_input("Max positions", min_value=1, max_value=30, value=8, step=1,
-                                           help="The plan spreads your cash across up to this many different tickers.")
-        max_lev_pct = a[4].number_input("Max leveraged-ETF %", min_value=0, max_value=100, value=15, step=5,
-                                        help="Cap on the share of your cash in 2x/3x ETFs like SOXL/TQQQ.")
+            st.markdown("**Your account**")
+            a = st.columns(5)
+            capital = a[0].number_input("Cash available ($)", min_value=1000, value=25000, step=1000,
+                                        help="Cash you can set aside to secure puts (strike × 100 per contract).")
+            reserve_pct = a[1].number_input("Keep in reserve %", min_value=0, max_value=90, value=10, step=5,
+                                            help="Cash you deliberately leave unused as a safety buffer.")
+            max_pos_pct = a[2].number_input("Preferred max per position %", min_value=1, max_value=100, value=15, step=5,
+                                            help="The plan sizes positions to stay within this share of your cash. "
+                                                 "If the only affordable contract is bigger, one contract is still "
+                                                 "allowed and flagged, as long as it fits your deployable cash.")
+            max_positions = a[3].number_input("Max positions", min_value=1, max_value=30, value=8, step=1,
+                                               help="The plan spreads your cash across up to this many different tickers.")
+            max_lev_pct = a[4].number_input("Max leveraged-ETF %", min_value=0, max_value=100, value=15, step=5,
+                                            help="Cap on the share of your cash in 2x/3x ETFs like SOXL/TQQQ.")
 
-        st.markdown("**Strategy filters**")
-        f = st.columns(4)
-        min_dte, max_dte = f[0].slider("Days to expiration", 1, 90, key="dte_range")
-        win_prob_min, win_prob_max = f[1].slider("Win probability %", 50, 99, key="win_range")
-        min_oi = f[2].number_input(
-            "Min open interest", min_value=0, step=5, key="min_oi",
-            help="Falls back to volume when Yahoo reports open interest as 0/blank for a contract.",
-        )
-        max_spread_pct = f[3].number_input("Max spread %", min_value=1, step=1, key="max_spread")
+            st.markdown("**Strategy filters**")
+            f = st.columns(4)
+            min_dte, max_dte = f[0].slider("Days to expiration", 1, 90, key="dte_range")
+            win_prob_min, win_prob_max = f[1].slider("Win probability %", 50, 99, key="win_range")
+            min_oi = f[2].number_input(
+                "Min open interest", min_value=0, step=5, key="min_oi",
+                help="Falls back to volume when Yahoo reports open interest as 0/blank for a contract.",
+            )
+            max_spread_pct = f[3].number_input("Max spread %", min_value=1, step=1, key="max_spread")
 
-        with st.expander("Risk & ranking filters"):
+            st.markdown("**Risk & ranking filters**")
             g = st.columns(4)
             min_hist_win = g[0].number_input(
                 "Min historical win %", min_value=0, max_value=100, value=70, step=5,
@@ -305,7 +315,7 @@ with tab_scan:
                      "session using each option's last traded price. Those rows are labeled and may be hours or "
                      "days old: always re-check live prices before trading.")
 
-        run_button = st.form_submit_button("Run scan", type="primary", width="stretch")
+            run_button = st.form_submit_button("Run scan", type="primary", width="stretch")
 
     tickers = [t.strip().upper() for t in tickers_input.replace("\n", ",").split(",") if t.strip()]
     for name in chosen_universes:
@@ -398,10 +408,11 @@ with tab_scan:
                 "results": results, "notes": notes, "order": tickers, "regime": regime,
                 "rf_rate": rf_rate, "fetched_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "rank_by": rank_label, "max_contract_cost": max_contract_cost, "relaxed_used": relaxed_used,
-                "market_info": market_info,
+                "market_info": market_info, "summary_label": f"{len(results)} of {len(tickers)} ticker(s) had candidates",
                 "acct": dict(capital=capital, reserve_pct=reserve_pct, max_pos_pct=max_pos_pct,
                              max_positions=max_positions, max_lev_pct=max_lev_pct),
             }
+            st.rerun()
 
     scan_state = st.session_state.get("scan")
 
@@ -419,7 +430,7 @@ with tab_scan:
         regime = scan_state["regime"]
         rank_col = E.RANK_OPTIONS[scan_state["rank_by"]]
 
-        st.caption(f"Fetched {scan_state['fetched_at']} · 13-week T-bill (risk-free rate): "
+        st.caption(f"✅ {scan_state.get('summary_label', 'Scan complete')} · fetched {scan_state['fetched_at']} · 13-week T-bill (risk-free rate): "
                    f"{scan_state['rf_rate'] * 100:.2f}% · ranked by: {scan_state['rank_by']} · "
                    f"max cash per contract: ${scan_state['max_contract_cost']:,.0f}".replace("$", "\\$"))
 
@@ -621,8 +632,7 @@ with tab_scan:
         with t_chart:
             st.caption("Each dot is a candidate. Up and to the right is better: higher conservative win probability "
                        "and higher yield. Hover for details.")
-            st.scatter_chart(summary, x="Win % (cons.)", y="Annualized Yield %",
-                             color="Ticker", size="Capital Req. $", height=420)
+            scatter(summary, "Win % (cons.)", "Annualized Yield %", "Ticker", size="Capital Req. $", height=420)
 
         if scan_state["notes"]:
             with st.expander(f"Scan notes ({len(scan_state['notes'])})"):
@@ -665,6 +675,7 @@ with tab_journal:
     mtm = st.session_state.get("mtm")
     if mtm is not None and not mtm.empty:
         st.dataframe(mtm, hide_index=True, width="stretch", column_config={
+            "Action": st.column_config.TextColumn("Action", width="large"),
             "Strike": st.column_config.NumberColumn(format="$%g"),
             "Sold at": st.column_config.NumberColumn(format="$%.2f"),
             "Spot": st.column_config.NumberColumn(format="$%.2f"),
