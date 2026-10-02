@@ -11,6 +11,7 @@ import streamlit as st
 import engine as E
 import journal as J
 import markets as MK
+import symbols as SYM
 from common import esc, kpi, md, money, scatter
 
 # label -> (min DTE, max DTE, (unused), (unused), one-line description)
@@ -368,8 +369,8 @@ def _show_results(scan):
 
 
 def _norm(sym):
-    """AAPL / aapl / BRK.B -> AAPL / AAPL / BRK-B (the form Yahoo uses)."""
-    return sym.strip().upper().replace(".", "-").replace("/", "-")
+    """AAPL / aapl / BRK.B / RY.TO -> AAPL / AAPL / BRK-B / RY.TO (the form Yahoo uses)."""
+    return SYM.normalize_symbol(sym)
 
 
 def _ticker_list(specific, groups, how_many, include_etfs, mk_price, mk_vol):
