@@ -5,7 +5,7 @@ import streamlit as st
 
 import markets as MK
 import portfolio as PF
-from common import live_panel, rerun_fragment, updated_caption
+from common import esc, live_panel, rerun_fragment, updated_caption
 
 
 def _alert_status(price, above, below):
@@ -74,12 +74,12 @@ def _panel():
 
     triggered = df[df.get("Alert", pd.Series(dtype=str)).fillna("") != ""] if "Alert" in df else pd.DataFrame()
     if not triggered.empty:
-        st.warning("**Price alerts:** " + " · ".join(f"{r.Ticker} {r.Alert}" for r in triggered.itertuples()))
+        st.warning(esc("**Price alerts:** " + " · ".join(f"{r.Ticker} {r.Alert}" for r in triggered.itertuples())))
         seen = st.session_state.setdefault("wl_notified", set())
         for r in triggered.itertuples():
             key = (r.Ticker, r.Alert)
             if key not in seen:
-                st.toast(f"{r.Ticker}: {r.Alert} (now ${r.Price:,.2f})", icon="🔔")
+                st.toast(esc(f"{r.Ticker}: {r.Alert} (now ${r.Price:,.2f})"), icon="🔔")
                 seen.add(key)
 
     def tint(v):

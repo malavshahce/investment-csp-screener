@@ -213,9 +213,30 @@ def trend_label(spot, sma50, sma200):
     return "Mixed"
 
 
+def ny_now():
+    """Current time in New York (options expire on New York dates, whatever your local clock says)."""
+    try:
+        from zoneinfo import ZoneInfo
+        return datetime.now(ZoneInfo("America/New_York"))
+    except Exception:
+        return datetime.now()
+
+
+def ny_today():
+    return ny_now().date()
+
+
+def intraday_years():
+    """Time left until today's 4:00 PM New York close, in years (floored at 10 minutes), for same-day options."""
+    now = ny_now()
+    close = now.replace(hour=16, minute=0, second=0, microsecond=0)
+    minutes = max((close - now).total_seconds() / 60, 10)
+    return minutes / (365 * 24 * 60)
+
+
 def days_to_expiry(expiry_str):
     exp_date = datetime.strptime(expiry_str, "%Y-%m-%d").date()
-    return (exp_date - date.today()).days
+    return (exp_date - ny_today()).days
 
 
 def _to_date(d):
@@ -347,6 +368,16 @@ def relax_params(p):
     )
 
 
+def widen_params(p):
+    """Last-resort search: relaxed liquidity/probability AND earnings/downtrend/history filters off, longer window.
+    Used only when the stricter passes found almost nothing; rows are labeled so the extra risk is visible."""
+    from dataclasses import replace
+    r = relax_params(p)
+    return replace(r, exclude_earnings=False, skip_downtrend=False, below_sma=False, require_edge=False,
+                   min_hist_win=0, min_otm_pct=0.0, min_premium_usd=min(p.min_premium_usd, 5),
+                   win_prob_min=max(50, p.win_prob_min - 12), min_dte=max(1, p.min_dte - 2), max_dte=p.max_dte + 10)
+
+
 RELAXED_NOTE = ("min premium $5, min open interest 100, max spread 25%, win probability 7 points lower, "
                 "min historical win 60%")
 
@@ -415,7 +446,7 @@ def scan_ticker_for_csp(ticker_symbol, p):
 
     for exp in expirations:
         dte = days_to_expiry(exp)
-        if dte < p.min_dte or dte > p.max_dte or dte <= 0:
+        if dte < p.min_dte or dte > p.max_dte or dte < 0:
             continue
 
         exp_date = datetime.strptime(exp, "%Y-%m-%d").date()
@@ -435,7 +466,7 @@ def scan_ticker_for_csp(ticker_symbol, p):
 
         counts["puts_in_window"] += len(puts)
 
-        T = dte / 365.0
+        T = dte / 365.0 if dte > 0 else intraday_years()
         hist_days = max(1, int(round(dte * 252 / 365)))
         ex_div = lazy_get("exdiv", get_ex_div_date)
         exdiv_in_window = ex_div is not None and date.today() <= ex_div <= exp_date
@@ -515,7 +546,7 @@ def scan_ticker_for_csp(ticker_symbol, p):
 
             net_capital = K - premium
             yield_pct = (premium / net_capital) * 100
-            annualized_yield = yield_pct * (365 / dte)
+            annualized_yield = yield_pct * (365 / max(dte, 1))
             score = (cons_win / 100) * annualized_yield / leverage_multiplier
             iv_hv_ratio = (iv / hv) if hv and not np.isnan(hv) and hv > 0 else np.nan
             otm_pct = (spot - K) / spot * 100
@@ -542,7 +573,7 @@ def scan_ticker_for_csp(ticker_symbol, p):
                 "Win % (cons.)": round(cons_win, 1),
                 "Edge $": round(edge_usd, 0) if not np.isnan(edge_usd) else np.nan,
                 "Yield %": round(yield_pct, 2),
-                "Return/Day %": round(yield_pct / dte, 3),
+                "Return/Day %": round(yield_pct / max(dte, 1), 3),
                 "Annualized Yield %": round(annualized_yield, 1),
                 "Score": round(score, 2),
                 "Lev": leverage_multiplier,

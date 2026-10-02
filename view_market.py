@@ -70,6 +70,7 @@ def _panel():
         st.markdown("**Sectors: day, 5 days, 1 month**")
         if not sec.empty:
             st.dataframe(sec.sort_values("1M %", ascending=False), hide_index=True, width="stretch",
+                         height=(len(sec) + 1) * 35 + 3,
                          column_config={c: st.column_config.NumberColumn(format="%+.1f%%")
                                         for c in ("Day %", "5D %", "1M %")})
             best, worst = sec.sort_values("Day %").iloc[-1], sec.sort_values("Day %").iloc[0]

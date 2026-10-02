@@ -1,11 +1,12 @@
 """Stock lookup tab: search any ticker/company, live quote, chart, key facts, dividends, news, put ideas, compare."""
+import altair as alt
 import pandas as pd
 import streamlit as st
 
 import calc
 import engine as E
 import markets as MK
-from common import big_number, line_chart, live_panel, md, pct, updated_caption
+from common import _show, big_number, category_bar, kpi, line_chart, live_panel, md, pct, updated_caption
 
 
 def _pick_symbol():
@@ -45,12 +46,12 @@ def _header(symbol, quote, prof):
     c[0].metric("Price", f"${price:,.2f}", f"{quote['Day %']:+.2f}% today")
     c[1].metric("Market cap", big_number(prof.get("marketCap")))
     pe, fpe = prof.get("trailingPE"), prof.get("forwardPE")
-    c[2].metric("P/E (trailing)", f"{pe:.1f}" if pe else "—", f"forward {fpe:.1f}" if fpe else None, delta_color="off")
+    kpi(c[2], "P/E (trailing)", f"{pe:.1f}" if pe else "—", f"forward {fpe:.1f}" if fpe else None)
     rate = MK.forward_dividend(symbol, prof)
     dy = rate / price * 100 if rate and price else 0.0
-    c[3].metric("Dividend yield", f"{dy:.2f}%" if dy else "None", f"${rate:.2f}/yr" if dy else None, delta_color="off")
+    kpi(c[3], "Dividend yield", f"{dy:.2f}%" if dy else "None", f"${rate:.2f}/yr" if dy else None)
     beta = prof.get("beta")
-    c[4].metric("Beta", f"{beta:.2f}" if beta else "—", "vs market (1.0)", delta_color="off")
+    kpi(c[4], "Beta", f"{beta:.2f}" if beta else "—", "vs market (1.0)")
     _range_bar(prof.get("fiftyTwoWeekLow"), prof.get("fiftyTwoWeekHigh"), price)
     tgt, rec = prof.get("targetMeanPrice"), prof.get("recommendationKey")
     if tgt:
@@ -83,17 +84,18 @@ def _chart(symbol, period_label):
         vol = df["Volume"].copy()
         if vol.index.tz is not None:
             vol.index = vol.index.tz_localize(None)
-        st.bar_chart(vol, height=110)
-    updated_caption(fetched)
+        vdf = vol.rename("Volume").rename_axis("Date").reset_index()
+        _show(alt.Chart(vdf).mark_bar(color="#7a8aa0", opacity=0.7).encode(
+            x=alt.X("Date:T", axis=None), y=alt.Y("Volume:Q", title=None, axis=alt.Axis(format="~s")),
+            tooltip=["Date:T", alt.Tooltip("Volume:Q", format=",.0f")]).properties(height=80))
 
 
 def _technicals(symbol):
     rsi, trend, close = MK.rsi_and_trend(symbol)
     c = st.columns(4)
     c[0].metric("Trend", trend)
-    c[1].metric("RSI (14)", f"{rsi:.0f}" if rsi == rsi else "—",
-                "oversold" if rsi == rsi and rsi < 30 else "overbought" if rsi == rsi and rsi > 70 else "neutral",
-                delta_color="off")
+    kpi(c[1], "RSI (14)", f"{rsi:.0f}" if rsi == rsi else "—",
+        "oversold (<30)" if rsi == rsi and rsi < 30 else "overbought (>70)" if rsi == rsi and rsi > 70 else "neutral (30-70)")
     if len(close) >= 60:
         c[2].metric("50-day average", f"${close.tail(50).mean():,.2f}")
         if len(close) >= 200:
@@ -135,16 +137,22 @@ def _dividends(symbol, price, prof):
     if not stats["has_dividends"]:
         st.info(f"{symbol} has no dividend history on Yahoo (it may not pay one).")
         return
+    fwd = MK.forward_dividend(symbol, prof)
     c = st.columns(5)
-    c[0].metric("Dividends / year", f"${stats['ttm']:.2f}", f"{stats['count']} payments", delta_color="off")
-    c[1].metric("Yield", f"{stats['yield_pct']:.2f}%")
-    c[2].metric("Paid", stats["frequency"])
+    kpi(c[0], "Paid, last 12 months", f"${stats['ttm']:.2f}", f"{stats['count']} payments · {stats['yield_pct']:.2f}% of price")
+    kpi(c[1], "Current annual rate", f"${fwd:.2f}" if fwd else "—",
+        f"{fwd / price * 100:.2f}% yield going forward" if fwd and price else None)
+    kpi(c[2], "Paid", stats["frequency"], f"last: ${stats['last']:.2f}")
     g = stats["growth_cagr"]
-    c[3].metric("Dividend growth", f"{g:.1f}%/yr" if g == g else "—", "5-year CAGR", delta_color="off")
-    c[4].metric("Increase streak", f"{stats['streak']} yrs", "consecutive raises", delta_color="off")
+    kpi(c[3], "Dividend growth", f"{g:.1f}%/yr" if g == g else "—", "5-year compound rate")
+    kpi(c[4], "Increase streak", f"{stats['streak']} yrs", "consecutive yearly raises")
+    if fwd and stats["ttm"] and abs(fwd / stats["ttm"] - 1) > 0.15:
+        st.caption("The current annual rate differs from what was actually paid over the last 12 months because the "
+                   "company recently changed its dividend. The current rate is the better guide to future income.")
     yearly = stats["by_year"].tail(15)
-    st.markdown("**Dividends paid per share, by year**")
-    st.bar_chart(pd.DataFrame({"Dividend per share": yearly.values}, index=[str(y) for y in yearly.index]), height=240)
+    st.markdown("**Dividends paid per share, by year** (the current year is partial)")
+    category_bar(pd.DataFrame({"Year": [str(y) for y in yearly.index], "Dividend per share": yearly.values}),
+                 "Year", "Dividend per share", order=[str(y) for y in yearly.index], fmt="$,.2f", height=240)
     last = div.tail(12).iloc[::-1].copy()
     last["Date"] = last["Date"].dt.strftime("%Y-%m-%d")
     st.dataframe(last, hide_index=True, width="stretch",
@@ -261,11 +269,12 @@ def _panel():
     quote = quotes.iloc[0]
     prof, _ = MK.get_profile(symbol)
     _header(symbol, quote, prof)
-    updated_caption(qts)
-    _chart(symbol, st.session_state.get("lk_period", "1Y"))
-    _technicals(symbol)
-
-    t_over, t_div, t_news, t_put, t_cmp = st.tabs(["Overview", "Dividends", "News", "Put ideas", "Compare"])
+    t_chart, t_over, t_div, t_news, t_put, t_cmp = st.tabs(
+        ["Chart", "Overview", "Dividends", "News", "Put ideas", "Compare"])
+    with t_chart:
+        _chart(symbol, st.session_state.get("lk_period", "1Y"))
+        _technicals(symbol)
+        updated_caption(qts)
     with t_over:
         _overview(prof)
     with t_div:

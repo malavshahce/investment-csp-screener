@@ -8,7 +8,7 @@ import streamlit as st
 import calc
 import markets as MK
 import portfolio as PF
-from common import big_number, category_bar, line_chart, live_panel, md, money, rerun_fragment, signed_bar, updated_caption
+from common import big_number, category_bar, kpi, line_chart, live_panel, md, money, rerun_fragment, signed_bar, updated_caption
 
 TEMPLATE = "ticker,shares,avg_cost,account,notes\nAAPL,10,150.00,Brokerage,example row\nKO,25,58.40,Roth IRA,\n"
 
@@ -65,23 +65,25 @@ def _tint(v):
 
 def _summary_row(sm):
     c = st.columns(5)
-    c[0].metric("Portfolio value", money(sm["value"]), f"cost {money(sm['cost'])}", delta_color="off")
+    kpi(c[0], "Portfolio value", money(sm["value"]), f"cost {money(sm['cost'])}")
     c[1].metric("Today", money(sm["day"]), f"{sm['day_pct']:+.2f}%")
     c[2].metric("Total gain / loss", money(sm["gain"]), f"{sm['gain_pct']:+.1f}%" if sm["gain_pct"] == sm["gain_pct"] else None)
-    c[3].metric("Dividends per year", money(sm["annual_div"]), f"{sm['yield_pct']:.2f}% yield", delta_color="off")
-    c[4].metric("Portfolio beta", f"{sm['beta']:.2f}" if sm["beta"] == sm["beta"] else "—",
-                f"{sm['payers']} of {sm['positions']} pay dividends", delta_color="off")
+    kpi(c[3], "Dividends per year", money(sm["annual_div"]), f"{sm['yield_pct']:.2f}% yield")
+    kpi(c[4], "Portfolio beta", f"{sm['beta']:.2f}" if sm["beta"] == sm["beta"] else "—",
+        f"{sm['payers']} of {sm['positions']} pay dividends")
 
 
 def _holdings_table(df):
-    show = df.copy()
-    show["Day %"] = show.get("Day %")
-    cols = [c for c in ["Ticker", "Name", "Account", "Shares", "Avg Cost", "Price", "Value", "Weight %", "Day $",
-                        "Day %", "Gain $", "Gain %", "Yield %", "Annual Div $", "Yield on Cost %", "Sector", "Beta"]
-            if c in show]
+    compact = ["Ticker", "Name", "Shares", "Price", "Value", "Weight %", "Day %", "Gain $", "Gain %", "Yield %",
+               "Annual Div $", "Sector"]
+    full = ["Ticker", "Name", "Account", "Shares", "Avg Cost", "Price", "Value", "Weight %", "Day $", "Day %",
+            "Gain $", "Gain %", "Yield %", "Annual Div $", "Yield on Cost %", "Sector", "Beta"]
+    more = st.toggle("Show all columns", key="pf_all_cols", help="Adds account, average cost, today in dollars, "
+                     "yield on cost and beta.")
+    cols = [c for c in (full if more else compact) if c in df]
     tint_cols = [c for c in ("Day $", "Day %", "Gain $", "Gain %") if c in cols]
     st.dataframe(
-        show[cols].style.map(_tint, subset=tint_cols), hide_index=True, width="stretch",
+        df[cols].style.map(_tint, subset=tint_cols), hide_index=True, width="stretch",
         column_config={
             "Shares": st.column_config.NumberColumn(format="%.3f"),
             "Avg Cost": st.column_config.NumberColumn(format="$%.2f"),
@@ -111,7 +113,7 @@ def _charts(df, holdings):
     with b:
         st.markdown("**By sector (% of portfolio)**")
         category_bar(sec.rename("Weight").rename_axis("Sector").reset_index(), "Sector", "Weight",
-                     order=list(sec.index), fmt=".1f")
+                     order=list(sec.index), fmt=".1f", horizontal=True, height=max(120, 42 * len(sec)))
 
     st.markdown("**Value over the past year vs the S&P 500**")
     st.caption("Uses today's share counts for the whole year (it shows how this mix performed, "
@@ -163,10 +165,10 @@ def _income(df, sm):
     d, p = drip.iloc[-1], plain.iloc[-1]
     m = st.columns(4)
     m[0].metric(f"Value in {years} yrs (DRIP)", money(d["Total"]), f"{money(d['Total'] - p['Total'])} vs not reinvesting")
-    m[1].metric("Yearly income then (DRIP)", money(d["AnnualIncome"]), f"{money(d['AnnualIncome'] / 12)}/month", delta_color="off")
+    kpi(m[1], "Yearly income then (DRIP)", money(d["AnnualIncome"]), f"{money(d['AnnualIncome'] / 12)}/month")
     m[2].metric("Dividends received", money(d["CumDividends"]))
     m[3].metric("Yield on cost then", f"{d['YieldOnCost']:.1f}%")
-    st.line_chart(pd.DataFrame({"Reinvest (DRIP)": drip["Total"], "Take as cash": plain["Total"]}, index=drip["Year"]),
+    line_chart(pd.DataFrame({"Reinvest (DRIP)": drip["Total"], "Take as cash": plain["Total"]}, index=drip["Year"]), zero=True,
                   height=260)
     st.caption("Treats your dividend-paying holdings as one blended position (quarterly payments). "
                "An illustration, not a forecast.")
