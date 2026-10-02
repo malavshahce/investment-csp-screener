@@ -30,7 +30,7 @@ LEVERAGE = {
 MIN_SANE_IV = 0.05   # Yahoo IV below this is almost always a bad quote
 MAX_SANE_IV = 5.0
 MAX_WORKERS = 6      # keep modest to avoid Yahoo rate limiting
-MAX_TICKERS = 2000   # safety cap per scan
+MAX_TICKERS = 4000   # safety cap per scan
 
 # Label shown in the UI -> column the candidates are ranked by
 RANK_OPTIONS = {
@@ -350,6 +350,7 @@ class ScanParams:
     below_sma: bool = False
     require_edge: bool = False
     allow_stale: bool = False   # use last-trade prices when there is no live bid/ask (market closed)
+    show_all: bool = False      # never skip a put for liquidity / probability / volatility / spread / premium
     rank_by: str = "Score"
 
 
@@ -443,6 +444,7 @@ def scan_ticker_for_csp(ticker_symbol, p):
         max_strike = min(max_strike, sma_50)
 
     candidates = []
+    market_open_now = us_market_status()[0]
 
     for exp in expirations:
         dte = days_to_expiry(exp)
@@ -481,35 +483,36 @@ def scan_ticker_for_csp(ticker_symbol, p):
             vol = getattr(row, "volume", 0)
             vol = 0 if pd.isna(vol) else vol
 
+            iv = float(iv) if iv is not None and not pd.isna(iv) else np.nan
             last = getattr(row, "lastPrice", 0) or 0
             stale = False
-            if (bid <= 0 or ask <= 0) and p.allow_stale and last > 0:
-                bid = ask = float(last)   # planning only: no live quote, so use the last trade
+            if (bid <= 0 or ask <= 0) and (p.allow_stale or p.show_all) and last > 0:
+                bid = ask = float(last)   # no live quote: show the last trade, clearly labeled
                 stale = True
 
-            # Normally only a live bid is a price you can actually sell at.
+            # A put needs some price to be shown; otherwise there is nothing to display.
             if bid <= 0 or ask <= 0 or K > max_strike:
                 continue
             premium = bid
             counts["otm_priced"] += 1
 
-            if K * 100 > p.max_contract_cost:
-                continue
-            counts["affordable"] += 1
+            if not p.show_all:
+                if K * 100 > p.max_contract_cost:
+                    continue
+                counts["affordable"] += 1
 
-            if premium * 100 < p.min_premium_usd:
-                continue
-            counts["premium_ok"] += 1
+                if premium * 100 < p.min_premium_usd:
+                    continue
+                counts["premium_ok"] += 1
 
-            # Yahoo often reports openInterest as 0/blank for active contracts,
-            # so fall back to volume.
-            liquidity = oi if oi > 0 else vol
-            if liquidity < p.min_oi:
-                continue
-            counts["liquidity"] += 1
+                # Yahoo often reports openInterest as 0/blank for active contracts, so fall back to volume.
+                liquidity = oi if oi > 0 else vol
+                if liquidity < p.min_oi:
+                    continue
+                counts["liquidity"] += 1
 
             spread_pct = (ask - bid) / ask * 100
-            if spread_pct > p.max_spread_pct:
+            if not p.show_all and spread_pct > p.max_spread_pct:
                 continue
             counts["spread"] += 1
 
@@ -518,24 +521,29 @@ def scan_ticker_for_csp(ticker_symbol, p):
                 # Yahoo's after-hours implied volatilities are placeholders (e.g. exactly 12.5% / 25%), so
                 # derive IV from the last-trade price instead.
                 iv = implied_vol_put(premium, spot, K, T, p.risk_free_rate, dividend_yield)
-            if iv is None or np.isnan(iv) or iv < MIN_SANE_IV or iv > MAX_SANE_IV:
+            iv_ok = not np.isnan(iv) and iv > 0
+            if not p.show_all and (not iv_ok or iv < MIN_SANE_IV or iv > MAX_SANE_IV):
                 continue
             counts["sane_iv"] += 1
 
-            delta, win_prob = bs_put_metrics(spot, K, T, p.risk_free_rate, dividend_yield, iv)
-            if np.isnan(win_prob):
+            if iv_ok:
+                delta, win_prob = bs_put_metrics(spot, K, T, p.risk_free_rate, dividend_yield, iv)
+            else:
+                delta = win_prob = np.nan
+            if np.isnan(win_prob) and not p.show_all:
                 continue
 
             win_prob_pct = win_prob * 100
-            if win_prob_pct < p.win_prob_min or win_prob_pct > p.win_prob_max:
+            if not p.show_all and (win_prob_pct < p.win_prob_min or win_prob_pct > p.win_prob_max):
                 continue
             counts["win_band"] += 1
 
             hist_win = hist_win_pct(hist_days, K / spot)
-            if p.min_hist_win > 0 and not np.isnan(hist_win) and hist_win < p.min_hist_win:
+            if not p.show_all and p.min_hist_win > 0 and not np.isnan(hist_win) and hist_win < p.min_hist_win:
                 continue
             counts["hist_ok"] += 1
-            cons_win = min(win_prob_pct, hist_win) if not np.isnan(hist_win) else win_prob_pct
+            known = [x for x in (win_prob_pct, hist_win) if not np.isnan(x)]
+            cons_win = min(known) if known else np.nan
 
             # Edge: how much richer the market price is than a fair price at recent realized vol.
             fair = bs_put_price(spot, K, T, p.risk_free_rate, dividend_yield, hv) if hv and hv >= 0.05 else np.nan
@@ -585,7 +593,7 @@ def scan_ticker_for_csp(ticker_symbol, p):
                 "Next Earnings": next_earnings.strftime("%Y-%m-%d") if next_earnings else "—",
                 "Earnings Alert": "⚠️ In Window" if earnings_in_window else "",
                 "Ex-Div Alert": "Ex-div in window" if exdiv_in_window else "",
-                "Quote": "Last trade (market closed)" if stale else "",
+                "Quote": ("" if not stale else "Last trade (market closed)" if not market_open_now else "No live bid (last trade)"),
                 "Trend": trend,
                 "RSI": round(rsi14, 0) if not np.isnan(rsi14) else np.nan,
                 "Open Interest": int(oi),

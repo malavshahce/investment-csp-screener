@@ -328,7 +328,7 @@ with tab_guide:
 - **Watchlist:** the stocks you follow, with price, daily/5-day/1-month change, where each sits in its 52-week range, analyst upside and yield. Set **alert prices**: when a price crosses one, a banner and pop-up appear.
 - **Portfolio (private):** enter your holdings (or import your broker's CSV) to see live value, today's change, gain/loss, allocation by stock and sector, dividends you will receive, a one-year comparison against the S&P 500, upcoming earnings and ex-dividend dates, and plain-language warnings about concentration. A **Hide amounts** switch blurs the numbers if someone is looking at your screen.
 - **Income:** the **Dividend calculator** shows what a position pays per year, month, week and day, and what you need to invest for a target monthly income. The **DRIP calculator** compares reinvesting dividends against taking them as cash, with monthly contributions, dividend tax, and a table of "what if the price grows faster or slower". Load any real stock to fill in its actual price, dividend, payout schedule and growth.
-- **Put Scanner:** pick your cash and how often you trade (including **Same day** for day trading), press *Find put ideas*, and get a short list of cash-secured puts (a plain-English top three, a sized plan for your cash, and full details). **Journal:** log the trades you take and track them.
+- **Put Scanner:** pick how often you trade (including **Same day** for day trading), your cash, and how many stocks to search, then press *Find put ideas*. You get every put contract found, a plain-English top picks list, a sized plan for your cash, and full details. **Journal:** log the trades you take and track them.
 - **Refreshing:** every live panel shows a **🕒 Updated** time that is when the data was really downloaded. Use **Refresh now** in the header for fresh data, or switch on **Auto-refresh** (30 seconds to 15 minutes). Prices are cached for about a minute so repeated clicks don't hammer Yahoo.
 """)
 
@@ -381,13 +381,16 @@ with tab_guide:
 9. **Manage, don't just wait.** Buy back at 50-70% of max profit, or roll when a stock threatens your strike.
 """)
 
-    with st.expander("How the tool picks and sizes trades"):
+    with st.expander("How the Put Scanner works"):
         md("""
-- **Filters first.** Only puts with a live bid and ask, a sane implied volatility, enough open interest (or volume), and a tight spread survive. Expirations with earnings inside the window are skipped by default. Stocks in a downtrend are shown and labeled in the *Trend* column (you can opt to skip them).
-- **Sizing.** The cash a put needs is `strike × 100`. Any put that fits your deployable cash (cash minus reserve) is eligible. The plan gives each ticker the number of contracts you choose in **Contracts per ticker** (default 1, so your cash is spread over as many different stocks as possible). Positions that fit an equal share of your cash go first; a single contract larger than that share is added last, cheapest first, and flagged if it exceeds your *Preferred max per position %*.
-- **Win probability** is the model chance the stock finishes above your strike. **Historical win %** is how often the stock actually did that in past windows of the same length. The tool uses the **lower** of the two (*Win % (cons.)*), so it never trusts an optimistic number.
-- **Ranking.** Default *Score* = conservative win % × annualized yield ÷ leverage. For daily and weekly trades, try ranking by **Edge $** or **Return per day**, because annualized yield exaggerates very short trades.
-- **My plan.** Takes the best-ranked candidates in order, one per ticker, sized to fit your per-position cap, your reserve, your max positions and your leveraged-ETF cap.
+- **Nothing is filtered out.** The scanner shows every put contract that has a price on the stocks it searches: expensive stocks, thinly traded contracts, very high or low volatility, very low or very high chances. You decide.
+- **How many stocks:** use *How many stocks to search?* to search the 100, 300, 600 or 1,000 most traded optionable US stocks, or every optionable stock (about 3,600, which takes 40+ minutes). Popular ETFs are added unless you turn that off in *Advanced*.
+- **Heads-up:** unusual contracts carry plain warnings instead of being hidden: *nobody has traded this contract*, *wide bid-ask gap*, *unusual volatility*, *low chance of keeping it*, *almost certain but pays very little*, *earnings before expiry*, *stock in downtrend*, *leveraged fund*, and *last trade* (no live bid).
+- **Looks sensible:** Yes means a 70-98% chance of keeping the payment, someone has traded the contract, the bid-ask gap is under 30%, and it pays at least $10. Sensible contracts are listed first, but every contract is still in **All details**.
+- **Fits my cash:** compares the cash a put needs (strike x 100) with your available cash minus your reserve. It never hides a stock.
+- **My plan:** builds a basket from the contracts that look sensible, sized to your cash: one contract per stock by default, spread across as many different stocks as fit. Unlike the lists, the plan does apply safety rules, because it recommends what to actually do.
+- **Chance of keeping it:** the lower of the option-pricing model's estimate and how often the stock really finished above that strike in past windows of the same length.
+- **No live bid:** when the market is closed (or nobody is bidding) the scanner shows the option's last trade and recomputes implied volatility from it, because Yahoo's after-hours volatility numbers are placeholders. Treat those prices as a plan, and re-check at the open.
 """)
 
     with st.expander("Rules that protect your account"):
