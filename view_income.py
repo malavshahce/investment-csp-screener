@@ -4,6 +4,7 @@ import streamlit as st
 
 import calc
 import markets as MK
+import symbols as SYM
 from common import category_bar, kpi, line_chart, md, money, updated_caption
 from view_lookup import _preload_income
 
@@ -16,10 +17,16 @@ def _load_bar():
     c = st.columns([2, 1, 3])
     sym = c[0].text_input("Load a real stock (optional)", key="inc_symbol_in", placeholder="KO, SCHD, O, JEPI, AAPL…")
     if c[1].button("Load data", key="inc_load", width="stretch") and sym.strip():
+        target = SYM.normalize_symbol(sym)
         with st.spinner("Loading price, dividends and growth…"):
-            ok = _preload_income(sym.strip().upper())
+            ok = _preload_income(target)
+            if not ok:                                  # e.g. ATD has no US quote: try the Canadian listing
+                match, _ = MK.resolve_symbols((target,))
+                if match.get(target):
+                    target = match[target]
+                    ok = _preload_income(target)
         if not ok:
-            st.warning(f"Could not load {sym.upper()}.")
+            st.warning(f"Could not load {target}. Canadian stocks need a suffix (RY.TO for the TSX); US class shares use a dash (BRK-B).")
     ts = st.session_state.get("inc_loaded_at")
     if st.session_state.get("inc_symbol"):
         c[2].caption(f"Using **{st.session_state['inc_symbol']}**: price, annual dividend, payout frequency and "

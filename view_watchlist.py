@@ -26,9 +26,12 @@ def _add_form(wl):
         c[4].write("")
         if c[4].form_submit_button("Add", type="primary", width="stretch") and t.strip():
             sym = PF._norm_ticker(t)
-            found, _ = MK.get_quotes((sym,))
-            if found.empty:
-                st.session_state["wl_msg"] = f"Could not find a price for '{sym}'. Check the symbol (e.g. BRK-B)."
+            matched, _ = MK.resolve_symbols((sym,))
+            sym = matched.get(sym) or ""
+            if not sym:
+                st.session_state["wl_msg"] = (f"Could not find a price for '{PF._norm_ticker(t)}'. Canadian stocks need a "
+                                              "suffix (RY.TO for the TSX, .V for TSX Venture); US class shares use a "
+                                              "dash (BRK-B).")
             else:
                 new = pd.DataFrame([{"ticker": sym, "alert_above": a or np.nan,
                                      "alert_below": b or np.nan, "note": n}])
@@ -62,7 +65,7 @@ def _panel():
         p = profiles.get(s, {})
         lo, hi, tgt = p.get("fiftyTwoWeekLow"), p.get("fiftyTwoWeekHigh"), p.get("targetMeanPrice")
         rows.append({
-            "Ticker": s, "Name": p.get("shortName") or s, "Price": price, "Day %": float(q.loc[s, "Day %"]),
+            "Ticker": s, "Name": p.get("shortName") or s, "Cur.": p.get("currency") or "", "Price": price, "Day %": float(q.loc[s, "Day %"]),
             "5D %": float(q.loc[s, "5D %"]), "1M %": float(q.loc[s, "1M %"]),
             "1M trend": q.loc[s, "Trend (1M)"],
             "52W position %": (price - lo) / (hi - lo) * 100 if lo and hi and hi > lo else np.nan,

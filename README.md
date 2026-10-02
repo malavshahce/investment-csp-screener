@@ -13,6 +13,10 @@ Live-data stock tools built on Yahoo Finance (`yfinance`). Run locally with `str
 | **Journal** | Log trades, live P&L, suggested actions, win-rate calibration |
 | **Guide** | How to use everything and a glossary |
 
+## Canadian stocks
+Use Yahoo's exchange suffix: `RY.TO` (TSX), `.V` (TSX Venture), `.CN` (CSE), `.NE` (NEO), or type `TSX:RY`. A plain symbol with no
+US listing (like `ATD`) is matched to its Canadian listing. The Portfolio tab converts CAD/USD holdings into the currency you pick.
+
 ## Data and privacy
 - Prices come from Yahoo (about 15 minutes delayed). Every live panel shows when its data was downloaded.
   Use **Refresh now** or **Auto-refresh** in the header.

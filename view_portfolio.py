@@ -74,9 +74,9 @@ def _summary_row(sm):
 
 
 def _holdings_table(df):
-    compact = ["Ticker", "Name", "Shares", "Price", "Value", "Weight %", "Day %", "Gain $", "Gain %", "Yield %",
+    compact = ["Ticker", "Name", "Shares", "Currency", "Price", "Value", "Weight %", "Day %", "Gain $", "Gain %", "Yield %",
                "Annual Div $", "Sector"]
-    full = ["Ticker", "Name", "Account", "Shares", "Avg Cost", "Price", "Value", "Weight %", "Day $", "Day %",
+    full = ["Ticker", "Name", "Account", "Shares", "Currency", "Avg Cost", "Price", "Value", "Weight %", "Day $", "Day %",
             "Gain $", "Gain %", "Yield %", "Annual Div $", "Yield on Cost %", "Sector", "Beta"]
     more = st.toggle("Show all columns", key="pf_all_cols", help="Adds account, average cost, today in dollars, "
                      "yield on cost and beta.")
@@ -98,6 +98,7 @@ def _holdings_table(df):
             "Annual Div $": st.column_config.NumberColumn("Dividends / yr", format="$%.0f"),
             "Yield on Cost %": st.column_config.NumberColumn("Yield on cost", format="%.2f%%"),
             "Beta": st.column_config.NumberColumn(format="%.2f"),
+            "Currency": st.column_config.TextColumn("Cur.", help="The currency the stock trades in."),
         })
 
 
@@ -116,14 +117,15 @@ def _charts(df, holdings):
                      order=list(sec.index), fmt=".1f", horizontal=True, height=max(120, 42 * len(sec)))
 
     st.markdown("**Value over the past year vs the S&P 500**")
-    st.caption("Uses today's share counts for the whole year (it shows how this mix performed, "
+    st.caption("Uses today's share counts and exchange rates for the whole year (it shows how this mix performed, "
                "not your actual account history).")
     syms = tuple(dict.fromkeys(list(df["Ticker"]) + ["SPY"]))
     mat, ts = MK.get_price_matrix(syms, "1y")
     if mat.empty or "SPY" not in mat:
         st.info("Not enough price history to draw the chart.")
         return
-    shares = df.groupby("Ticker")["Shares"].sum()
+    fx = df["FX"] if "FX" in df else 1.0
+    shares = (df["Shares"] * fx).groupby(df["Ticker"]).sum()          # shares x exchange rate = base-currency weight
     held = [t for t in shares.index if t in mat.columns]
     value = (mat[held] * shares[held]).sum(axis=1)
     out = pd.DataFrame({"Your portfolio": value / value.iloc[0] * 100, "S&P 500 (SPY)": mat["SPY"] / mat["SPY"].iloc[0] * 100})
@@ -190,9 +192,12 @@ def _events(df):
 def _make_panel(on_cloud, has_password):
     def _panel():
         st.subheader("My portfolio (private)")
-        top = st.columns([1, 3])
+        top = st.columns([1, 1, 3])
         hide = top[0].toggle("Hide amounts", key="pf_hide", help="Blurs the numbers: handy when someone is watching your screen.")
-        top[1].caption("Only you can see this tab: it sits behind your app password and your data stays in a local file.")
+        base = top[1].selectbox("Show amounts in", ["CAD", "USD"], key="pf_base",
+                                help="Holdings priced in another currency (for example TSX stocks in CAD) are converted "
+                                     "to this one at today's exchange rate.")
+        top[2].caption("Only you can see this tab: it sits behind your app password and your data stays in a local file.")
         if hide:
             st.markdown("<style>.st-key-pf_values{filter:blur(9px);user-select:none;}</style>", unsafe_allow_html=True)
 
@@ -202,13 +207,16 @@ def _make_panel(on_cloud, has_password):
             st.info("Add your holdings above (ticker, shares, average cost) to see live value, gains, dividends and more.")
             return
 
-        df, fetched = PF.value_holdings(holdings)
+        df, fetched = PF.value_holdings(holdings, base)
         if df.empty or "Value" not in df or df["Value"].notna().sum() == 0:
             st.warning("Could not get prices for your holdings right now. Try Refresh in a minute.")
             return
         bad = df[df["Value"].isna()]["Ticker"].tolist()
         if bad:
-            st.warning("No quote for: " + ", ".join(bad) + ". Check the ticker symbols (class shares use a dash, e.g. BRK-B).")
+            st.warning("No quote for: " + ", ".join(bad) + ". Check the symbols: Canadian stocks need a suffix (RY.TO for "
+                       "the TSX, .V for TSX Venture), and US class shares use a dash (BRK-B).")
+        for note in df.attrs.get("notes", []):
+            st.info(note)
         df = df.dropna(subset=["Value"])
         sm = PF.summarize(df)
         ignored = int((holdings["shares"].fillna(0) <= 0).sum())
@@ -217,6 +225,12 @@ def _make_panel(on_cloud, has_password):
         if sm.get("missing_cost"):
             st.caption(f"{sm['missing_cost']} holding(s) have no average cost, so they are left out of gain/loss "
                        "and yield-on-cost. Add the cost in Manage holdings.")
+
+        cur_mix = sorted(set(df["Currency"].dropna())) if "Currency" in df else []
+        if len(cur_mix) > 1 or (cur_mix and cur_mix[0] != base):
+            st.caption(f"All amounts are in **{base}**. Holdings in {', '.join(c for c in cur_mix if c != base)} are "
+                       "converted at today's exchange rate; the Price and Avg Cost columns stay in each stock's own "
+                       "currency, and average costs are assumed to be in that currency too.")
 
         with st.container(key="pf_values"):
             _summary_row(sm)

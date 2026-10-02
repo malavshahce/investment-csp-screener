@@ -11,6 +11,7 @@ import yfinance as yf
 
 import calc
 import engine as E
+import symbols as SYM
 
 QUOTE_TTL = 60
 
@@ -79,6 +80,27 @@ def get_quotes(symbols):
             "Trend (1M)": [float(x) for x in close.tail(22)],
         })
     return pd.DataFrame(rows), _now()
+
+
+def resolve_symbols(symbols):
+    """Find a live quote for each symbol. A plain symbol with no quote (say RY when you hold the Toronto listing) is
+    matched to its Canadian listing by trying .TO, .V, .CN and .NE. Returns ({symbol: resolved or None}, quotes)."""
+    symbols = tuple(dict.fromkeys(symbols))
+    quotes, _ = get_quotes(symbols)
+    have = set(quotes["Symbol"]) if not quotes.empty else set()
+    missing = [s for s in symbols if s not in have]
+    resolved = {s: (s if s in have else None) for s in symbols}
+    cands = {s + suf: s for s in missing if not SYM.suffix_of(s) for suf in SYM.CANADA_SUFFIXES}
+    if cands:
+        extra, _ = get_quotes(tuple(cands))
+        got = set(extra["Symbol"]) if not extra.empty else set()
+        for s in missing:
+            for suf in SYM.CANADA_SUFFIXES:
+                if s + suf in got:
+                    resolved[s] = s + suf
+                    break
+        quotes = pd.concat([quotes, extra], ignore_index=True)
+    return resolved, quotes
 
 
 @st.cache_data(ttl=300, show_spinner=False)

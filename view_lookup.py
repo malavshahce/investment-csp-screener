@@ -6,6 +6,7 @@ import streamlit as st
 import calc
 import engine as E
 import markets as MK
+import symbols as SYM
 from common import _show, esc, big_number, category_bar, kpi, line_chart, live_panel, md, pct, updated_caption
 
 
@@ -18,7 +19,7 @@ def _pick_symbol():
         return None
     results = MK.search_symbols(q)
     options = [(r["symbol"], f"{r['symbol']} — {r['name']} · {r['type'].title()} · {r['exchange']}") for r in results]
-    raw = q.strip().upper().replace(" ", "")
+    raw = SYM.normalize_symbol(q)
     if raw and len(raw) <= 10 and not any(s == raw for s, _ in options):
         options.append((raw, f"{raw} (use exactly as a ticker)"))
     if not options:
@@ -43,7 +44,8 @@ def _header(symbol, quote, prof):
     st.caption(" · ".join(b for b in bits if b))
     price = float(quote["Price"])
     c = st.columns(5)
-    c[0].metric("Price", f"${price:,.2f}", f"{quote['Day %']:+.2f}% today")
+    cur = prof.get("currency") or ""
+    c[0].metric(f"Price ({cur})" if cur and cur != "USD" else "Price", f"${price:,.2f}", f"{quote['Day %']:+.2f}% today")
     c[1].metric("Market cap", big_number(prof.get("marketCap")))
     pe, fpe = prof.get("trailingPE"), prof.get("forwardPE")
     kpi(c[2], "P/E (trailing)", f"{pe:.1f}" if pe else "—", f"forward {fpe:.1f}" if fpe else None)
@@ -269,8 +271,15 @@ def _panel():
         return
     quotes, qts = MK.get_quotes((symbol,))
     if quotes.empty:
-        st.warning(f"Could not get a price for {symbol}. Check the symbol or try again shortly.")
-        return
+        match, _ = MK.resolve_symbols((symbol,))
+        if match.get(symbol):                       # e.g. RY has no US quote here, so use the Toronto listing RY.TO
+            symbol = match[symbol]
+            st.info(f"Showing **{symbol}** (the Canadian listing).")
+            quotes, qts = MK.get_quotes((symbol,))
+        else:
+            st.warning(f"Could not get a price for {symbol}. Canadian stocks need a suffix (RY.TO for the TSX, .V for "
+                       "TSX Venture); US class shares use a dash (BRK-B).")
+            return
     quote = quotes.iloc[0]
     prof, _ = MK.get_profile(symbol)
     _header(symbol, quote, prof)

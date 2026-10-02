@@ -16,6 +16,8 @@ import yfinance as yf
 from scipy.optimize import brentq
 from scipy.stats import norm
 
+import symbols as SYM
+
 warnings.filterwarnings("ignore")
 logging.getLogger("yfinance").setLevel(logging.CRITICAL)
 
@@ -631,8 +633,12 @@ def empty_reason(ticker, spot, counts, p):
     if counts.get("downtrend_skip"):
         return f"{ticker}: skipped — stock is in a downtrend (price < 50D SMA < 200D SMA)."
     if counts["puts_in_window"] == 0:
-        return (f"{ticker}: no option chains found in the {p.min_dte}-{p.max_dte} day window "
-                f"(spot: ${spot:.2f}), or every expiration was excluded by the earnings filter.")
+        if SYM.suffix_of(ticker) in SYM.CANADA_SUFFIXES:
+            us = ticker[:-len(SYM.suffix_of(ticker))]
+            return (f"{ticker}: Yahoo has no option data for Canadian-listed shares. Many of these companies also trade "
+                    f"in the US with listed options (try {us}); those options are priced in US dollars.")
+        return (f"{ticker}: no option chains found in the {p.min_dte}-{p.max_dte} day window (spot: ${spot:.2f}). "
+                "Yahoo may have no options for this symbol, or none expire in this window; try another style.")
     if counts["otm_priced"] and counts["affordable"] == 0:
         return (f"{ticker}: too expensive for your cash — every OTM put needs more than "
                 f"${p.max_contract_cost:,.0f} per contract (spot: ${spot:.2f}).")
