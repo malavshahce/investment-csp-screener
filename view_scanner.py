@@ -9,16 +9,19 @@ import streamlit as st
 
 import engine as E
 import journal as J
+import markets as MK
 from common import esc, kpi, md, money, scatter
 
 # label -> (min DTE, max DTE, min open interest, max spread %, one-line description)
+SAME_DAY = "Same day (expires today)"
 STYLES = {
+    SAME_DAY: (0, 0, 50, 15, "Day trading: sell a put that expires today and close it the same day. Needs the market open."),
     "Weekly (4-10 days)": (4, 10, 300, 12, "Most popular: a new trade about once a week."),
     "Monthly (30-45 days)": (30, 45, 300, 15, "Slower and calmer: one trade a month, close early at 50% profit."),
     "Every 2-4 weeks (11-25 days)": (11, 25, 300, 15, "Middle ground between weekly and monthly."),
     "Daily (1-3 days)": (1, 3, 500, 10, "Very short trades with small payments. Needs daily attention."),
 }
-DEFAULT_STYLE = "Weekly (4-10 days)"
+DEFAULT_STYLE = SAME_DAY
 CONTRACT_CHOICES = {
     "1 contract per stock (more different stocks)": 1,
     "Up to 2 contracts per stock": 2,
@@ -113,7 +116,7 @@ def _execute(tickers, params, status):
         status.update(label=f"Few ideas: loosening liquidity and probability limits on {len(near_miss)} stock(s)…")
         run_pass(near_miss, workers, "Loosened search", E.relax_params(params), "Relaxed filters")
         stages.append("relaxed")
-    if rows() < 3:
+    if rows() < 3 and params.max_dte > 0:
         pool = [t for t in soft_miss if t not in results]
         if pool:
             status.update(label=f"Still few ideas: widening the search on {len(pool)} stock(s)…")
@@ -148,7 +151,8 @@ def _top_picks(summary, rank_col, limit=12):
     view = pd.DataFrame({
         "Stock": best["Ticker"].values,
         "Sell this put": [f"${k:g} put" for k in best["Strike"]],
-        "Expires": [f"{e}  ({d} days)" for e, d in zip(best["Expiration"], best["DTE"])],
+        "Expires": [("Today" if d == 0 else f"{e}  ({d} days)") for e, d in zip(best["Expiration"], best["DTE"])],
+        "Below price": best["% OTM"].values,
         "You collect": best["Premium $"].values,
         "Chance you keep it": best["Win % (cons.)"].values,
         "Return": best["Yield %"].values,
@@ -156,6 +160,8 @@ def _top_picks(summary, rank_col, limit=12):
         "Heads-up": [_heads_up(r) for _, r in best.iterrows()],
     })
     st.dataframe(view, hide_index=True, width="stretch", column_config={
+        "Below price": _CC.NumberColumn("Below price", format="%.1f%%",
+                                        help="How far under today's price the strike is. A bigger gap is safer."),
         "You collect": _CC.NumberColumn("You collect", format="$%d", help="Paid to you today, per contract (100 shares)."),
         "Chance you keep it": _CC.ProgressColumn("Chance you keep it", format="%.0f%%", min_value=50, max_value=100,
                                                 help="Estimated chance the stock stays above the strike, so you keep "
@@ -172,7 +178,8 @@ def _top_picks(summary, rank_col, limit=12):
 
 def _in_words(best, n=3):
     for _, r in best.head(n).iterrows():
-        md(f"**{r['Ticker']}** · Sell 1 **${r['Strike']:g} put** expiring {r['Expiration']} → you collect about "
+        when = "today" if r["DTE"] == 0 else r["Expiration"]
+        md(f"**{r['Ticker']}** · Sell 1 **${r['Strike']:g} put** expiring {when} → you collect about "
            f"**${int(r['Premium $']):,}**. If {r['Ticker']} stays above ${r['Strike']:g} you keep it all "
            f"(roughly **{r['Win % (cons.)']:.0f}%** chance). You set aside ${int(r['Capital Req. $']):,}.")
 
@@ -236,10 +243,17 @@ def _show_results(scan):
 
     if not scan["results"]:
         st.error("No put ideas found for these settings.")
-        st.markdown("**Try one of these:**\n"
-                    "- Pick a longer style (Monthly) or raise your cash.\n"
-                    "- Open *Advanced* and add the **Entire US options market** to the stocks to scan.\n"
-                    "- If the market is closed, make sure *Use last-trade prices when the market is closed* is ticked.")
+        if scan.get("style") == SAME_DAY:
+            st.markdown("**For same-day trades:**\n"
+                        "- The market must be open (9:30 AM to 4:00 PM New York). Early in the session many strikes "
+                        "have no bids yet, so try after 9:45 AM.\n"
+                        "- Use *Check which stocks expire today* above: only those stocks have a same-day put.\n"
+                        "- Lower the *chance of keeping the payment* range in Advanced (for example 75-97%).")
+        else:
+            st.markdown("**Try one of these:**\n"
+                        "- Pick a longer style (Monthly) or raise your cash.\n"
+                        "- Open *Advanced* and add the **Entire US options market** to the stocks to scan.\n"
+                        "- If the market is closed, make sure *Use last-trade prices when the market is closed* is ticked.")
         with st.expander(f"Why ({len(scan['notes'])} notes)"):
             md("\n".join(f"- {n}" for n in scan["notes"][:60]))
         return
@@ -274,11 +288,43 @@ def _show_results(scan):
 # ---------------- Page ----------------
 
 
+def _today_panel(extra, universes):
+    """Which stocks have options that expire today? (the shortlist for same-day trading)"""
+    ny = E.ny_now()
+    with st.expander(f"📅 Which stocks have options expiring today? ({ny:%a %b %d})",
+                     expanded=not st.session_state.get("scan_v2")):
+        st.caption("For same-day trading you can only use stocks that have a put expiring **today**. Mondays to "
+                   "Thursdays only some stocks and ETFs (like SPY, QQQ, IWM) have one; Fridays most do.")
+        if st.button("Check which stocks expire today", key="sc_today_btn"):
+            tickers = [t.strip().upper() for t in extra.replace("\n", ",").split(",") if t.strip()]
+            for name in universes:
+                if name in E.UNIVERSES:
+                    tickers += E.UNIVERSES[name]()
+            tickers = tuple(dict.fromkeys(tickers))
+            with st.spinner(f"Checking {len(tickers)} stocks…"):
+                st.session_state["sc_today"] = MK.get_same_day_expiries(tickers) + (len(tickers),)
+        if "sc_today" in st.session_state:
+            df, ts, n = st.session_state["sc_today"]
+            if df.empty:
+                st.info(f"None of the {n} stocks checked have options expiring today. (Weekends and market holidays "
+                        "have no same-day expiries.)")
+            else:
+                df = df.sort_values(["Expiries this week", "Symbol"], ascending=[False, True])
+                st.success(f"{len(df)} of {n} stocks have options expiring today.")
+                st.dataframe(df, hide_index=True, width="stretch", column_config={
+                    "Symbol": _CC.TextColumn("Stock"), "Price": _CC.NumberColumn(format="$%.2f"),
+                    "Day %": _CC.NumberColumn("Today", format="%+.2f%%"),
+                    "Expiries this week": _CC.NumberColumn("Expiry dates this week", format="%d",
+                                                          help="Stocks with several dates this week have daily options.")})
+                st.caption(f"Checked {ts:%H:%M:%S}. Choose **Same day** below and press *Find put ideas* to see which "
+                           "strikes are worth selling on these stocks.")
+
+
 def render():
     market_open, closed_msg = E.us_market_status()
     if not market_open:
-        st.info("🌙 The US market is closed right now, so option prices from the last trade are used. Use the results "
-                "to plan for the next session and re-check live prices at the open.")
+        st.info("🌙 The US market is closed right now. Same-day trades need live prices, so run **Same day** between about "
+                "9:45 AM and 3:45 PM New York time. Other styles use each option's last trade so you can plan ahead.")
 
     with st.form("scanner_form", border=True):
         c = st.columns([2.2, 1.2, 1.2])
@@ -324,6 +370,8 @@ def render():
             mk_vol = m[1].number_input("Whole market: min daily volume", 0, 100_000_000, 1_000_000, 250_000, key="sc_mkvol")
             mk_n = m[2].number_input("Whole market: max stocks", 50, 2000, 400, 50, key="sc_mkn")
 
+    _today_panel(extra, universes)
+
     if run:
         tickers = [t.strip().upper() for t in extra.replace("\n", ",").split(",") if t.strip()]
         for name in universes:
@@ -341,6 +389,7 @@ def render():
             st.warning("Pick at least one group of stocks under Advanced settings.")
         else:
             dmin, dmax, oi, spread, _ = STYLES[style]
+            allow_stale = allow_stale and style != SAME_DAY   # a stale last trade is useless for same-day trading
             params = E.ScanParams(
                 risk_free_rate=E.get_risk_free_rate(), min_dte=dmin, max_dte=dmax, win_prob_min=win[0],
                 win_prob_max=win[1], min_oi=oi, max_spread_pct=spread, top_n=3, min_hist_win=70,
@@ -354,7 +403,7 @@ def render():
                 status.update(label="Done", state="complete")
             st.session_state["scan_v2"] = {
                 "results": results, "notes": notes, "regime": regime, "rank_by": rank,
-                "label": f"{len(results)} of {len(tickers)} stocks have put ideas",
+                "label": f"{len(results)} of {len(tickers)} stocks have put ideas", "style": style,
                 "fetched_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "market_info": market_info,
                 "acct": dict(capital=capital, reserve_pct=reserve, max_pos_pct=pos_pct, max_positions=max_pos,
                              max_lev_pct=lev_pct),

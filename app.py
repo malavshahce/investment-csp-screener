@@ -305,7 +305,7 @@ with tab_guide:
 - **Watchlist:** the stocks you follow, with price, daily/5-day/1-month change, where each sits in its 52-week range, analyst upside and yield. Set **alert prices**: when a price crosses one, a banner and pop-up appear.
 - **Portfolio (private):** enter your holdings (or import your broker's CSV) to see live value, today's change, gain/loss, allocation by stock and sector, dividends you will receive, a one-year comparison against the S&P 500, upcoming earnings and ex-dividend dates, and plain-language warnings about concentration. A **Hide amounts** switch blurs the numbers if someone is looking at your screen.
 - **Income:** the **Dividend calculator** shows what a position pays per year, month, week and day, and what you need to invest for a target monthly income. The **DRIP calculator** compares reinvesting dividends against taking them as cash, with monthly contributions, dividend tax, and a table of "what if the price grows faster or slower". Load any real stock to fill in its actual price, dividend, payout schedule and growth.
-- **Put Scanner:** pick your cash and how often you trade, press *Find put ideas*, and get a short list of cash-secured puts (a plain-English top three, a sized plan for your cash, and full details). **Journal:** log the trades you take and track them.
+- **Put Scanner:** pick your cash and how often you trade (including **Same day** for day trading), press *Find put ideas*, and get a short list of cash-secured puts (a plain-English top three, a sized plan for your cash, and full details). **Journal:** log the trades you take and track them.
 - **Refreshing:** every live panel shows a **🕒 Updated** time that is when the data was really downloaded. Use **Refresh now** in the header for fresh data, or switch on **Auto-refresh** (30 seconds to 15 minutes). Prices are cached for about a minute so repeated clicks don't hammer Yahoo.
 """)
 
@@ -332,6 +332,17 @@ with tab_guide:
 - **Portfolio beta:** your holdings' betas averaged by weight: how jumpy the whole portfolio is compared with the market.
 - **Treasury yield (10-year):** what the US government pays to borrow for 10 years. Rising yields can pressure stock prices and boost bond appeal.
 - **Sector ETFs (XLK, XLF...):** funds that track one sector. The Market tab uses them to show which sectors are leading or lagging.
+""")
+
+    with st.expander("Day trading with same-day puts (0DTE)"):
+        md("""
+- **What it is:** a put that **expires today**. You sell it in the morning, collect the payment, and either buy it back later the same day for less (keeping the difference) or let it expire worthless at 4:00 PM New York time.
+- **Which stocks:** only those with an option expiring today. On **Fridays** almost every large stock has one; **Monday to Thursday** only some stocks and ETFs do (SPY, QQQ and IWM have them every day). Use **Check which stocks expire today** in the Put Scanner for the exact list.
+- **How to scan:** choose **Same day (expires today)**, enter your cash, and press **Find put ideas**. The scan uses the real time left until the close, not whole days.
+- **When:** run it while the market is open, ideally after about 9:45 AM New York time. Before that, many strikes have no bids yet, and after 4:00 PM there is nothing to trade.
+- **Read *Below price* first:** it is how far under today's price the strike sits. For same-day puts, a bigger gap is safer.
+- **Plan the exit before you sell:** decide the price you will buy the put back at (for example when it has lost 50-70% of its value) and the price where you will cut the loss.
+- **Why it is risky:** same-day options move very fast. A stock that drops a few percent can turn a small gain into a loss many times larger within minutes. Keep size small, never risk money you can't lose, and expect to be assigned shares if you hold to the close.
 """)
 
     with st.expander("Your daily routine (about 5 minutes)", expanded=True):

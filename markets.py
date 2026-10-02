@@ -287,10 +287,42 @@ def get_events(symbols):
     return pd.DataFrame(rows), _now()
 
 
+@st.cache_data(ttl=300, show_spinner=False)
+def get_same_day_expiries(symbols):
+    """Which of these symbols have options expiring today (New York date)?  Returns (DataFrame, fetched_at).
+    Columns: Symbol, Price, Day %, Expiries this week (count). Empty on weekends/holidays."""
+    today = E.ny_today()
+    today_iso = today.isoformat()
+
+    def one(sym):
+        try:
+            opts = yf.Ticker(sym).options
+        except Exception:
+            return None
+        if today_iso not in opts:
+            return None
+        week = sum(1 for o in opts if 0 <= (datetime.strptime(o, "%Y-%m-%d").date() - today).days <= 7)
+        return {"Symbol": sym, "Expiries this week": week}
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        hits = [h for h in pool.map(one, symbols) if h]
+    if not hits:
+        return pd.DataFrame(columns=["Symbol", "Price", "Day %", "Expiries this week"]), _now()
+    quotes, _ = get_quotes(tuple(h["Symbol"] for h in hits))
+    q = quotes.set_index("Symbol") if not quotes.empty else pd.DataFrame()
+    rows = []
+    for h in hits:
+        s = h["Symbol"]
+        rows.append({"Symbol": s, "Price": float(q.loc[s, "Price"]) if s in q.index else float("nan"),
+                     "Day %": float(q.loc[s, "Day %"]) if s in q.index else float("nan"),
+                     "Expiries this week": h["Expiries this week"]})
+    return pd.DataFrame(rows), _now()
+
+
 def clear_live_caches():
     """Drop every cached live dataset so the next render downloads fresh data."""
     for fn in (get_quotes, get_history, get_price_matrix, get_profile, get_profiles, get_news, get_dividend_history,
-               get_regime, get_events, search_symbols):
+               get_regime, get_events, search_symbols, get_same_day_expiries):
         fn.clear()
 
 
